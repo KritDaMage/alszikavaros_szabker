@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Alszik a város - Játékvezető</title>
+<style>
+  :root {
+    --bg: #12141c;
+    --panel: #1c1f2b;
+    --panel-2: #262a3a;
+    --border: #343a4d;
+    --text: #eef0f6;
+    --muted: #9aa0b4;
+    --accent: #6c8cff;
+    --accent-2: #8f6cff;
+    --danger: #ff6c6c;
+    --ok: #6cffab;
+    --polgar: #6c8cff;
+    --gyilkos: #ff6c6c;
+    --semleges: #ffcf6c;
+    --sky-day-top: #2b5c8a;
+    --sky-day-bottom: #6ea8d8;
+    --sky-night-top: #0a0e1a;
+    --sky-night-bottom: #1c2740;
+    --sun: #ffd166;
+    --moon: #e6ecf7;
+    font-size: 16px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: 3rem;
+  }
+
+  header {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+  }
+
+  header h1 {
+    font-size: 1.1rem;
+    margin: 0;
+  }
+
+  .header-title-button {
+    cursor: pointer;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+  }
+  .header-title-button:hover {
+    color: var(--accent);
+  }
+
+  header .status {
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  header .header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  main {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 1rem 1.25rem;
+  }
+
+  @keyframes screen-slide-up {
+    from { opacity: 0; transform: translateY(28px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  main.screen-enter {
+    animation: screen-slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    main.screen-enter {
+      animation: none;
+    }
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .card h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  button {
+    font: inherit;
+    border: none;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  button:hover { border-color: var(--accent); }
+
+  button.primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  button.danger {
+    background: transparent;
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+
+  button.small {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.85rem;
+  }
+
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  input[type="text"], input[type="number"] {
+    font: inherit;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.5rem 0.6rem;
+  }
+
+  .row {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .player-list {
+    list-style: none;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .player-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--panel-2);
+    padding: 0.5rem 0.7rem;
+    border-radius: 8px;
+  }
+
+  .player-list li.dead {
+    opacity: 0.45;
+    text-decoration: line-through;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .badge.polgarok { background: rgba(108,140,255,0.15); color: var(--polgar); }
+  .badge.gyilkosok { background: rgba(255,108,108,0.15); color: var(--gyilkos); }
+  .badge.semleges { background: rgba(255,207,108,0.15); color: var(--semleges); }
+
+  .role-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .role-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .role-row:last-child { border-bottom: none; }
+  .role-row .role-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .night-role-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .night-role-header .role-icon {
+    width: 40px;
+    height: 40px;
+    padding: 0.5rem;
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--accent);
+  }
+  .role-row input { width: 4rem; }
+
+  .linked-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.5rem;
+    padding: 0.3rem 0.5rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .toggle-switch {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    padding: 0;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: transform 0.15s ease, background 0.15s ease;
+  }
+  .toggle-switch[aria-pressed="true"] {
+    background: rgba(108,140,255,0.25);
+    border-color: var(--accent);
+  }
+  .toggle-switch[aria-pressed="true"]::after {
+    transform: translateX(20px);
+    background: var(--accent);
+  }
+
+  .target-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
+  .target-grid button {
+    padding: 0.75rem 0.5rem;
+  }
+
+  .prompt {
+    font-size: 1.1rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .muted { color: var(--muted); font-size: 0.9rem; }
+
+  .home-card {
+    text-align: center;
+    padding: 2.5rem 1.5rem;
+  }
+  .home-emoji { font-size: 3rem; line-height: 1; margin-bottom: 0.5rem; }
+  .home-title { font-size: 1.5rem; margin: 0 0 0.75rem; }
+  .home-card .muted { max-width: 32rem; margin: 0 auto 1.5rem; }
+
+  /* Idle nap/hold ciklus a város fölött - lásd skyWidgetHtml(), újrafelhasználható. */
+  .sky-widget {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+  }
+  .sky-widget svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .sky-day { animation: sky-day-fade 16s linear infinite; }
+  .sky-night { animation: sky-night-fade 16s linear infinite; opacity: 0; }
+  .stars { fill: #ffffff; animation: sky-night-fade 16s linear infinite; }
+
+  @keyframes sky-day-fade {
+    0%, 45% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+  @keyframes sky-night-fade {
+    0%, 50% { opacity: 0; }
+    55%, 95% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  .sky-body {
+    offset-path: path('M10,90 Q100,-60 190,90');
+  }
+  .sun {
+    fill: url(#sky-sun-grad);
+    filter: drop-shadow(0 0 6px var(--sun));
+    animation: sky-sun-arc 16s linear infinite;
+  }
+  .moon {
+    fill: url(#sky-moon-grad);
+    filter: drop-shadow(0 0 5px var(--moon));
+    animation: sky-moon-arc 16s linear infinite;
+  }
+
+  @keyframes sky-sun-arc {
+    0%   { offset-distance: 0%;   opacity: 0; }
+    5%   { opacity: 1; }
+    45%  { opacity: 1; }
+    50%  { offset-distance: 100%; opacity: 0; }
+    100% { offset-distance: 100%; opacity: 0; }
+  }
+  @keyframes sky-moon-arc {
+    0%   { offset-distance: 0%;   opacity: 0; }
+    50%  { offset-distance: 0%;   opacity: 0; }
+    55%  { opacity: 1; }
+    95%  { opacity: 1; }
+    100% { offset-distance: 100%; opacity: 0; }
+  }
+
+  .skyline path {
+    fill: var(--panel-2);
+    stroke: var(--border);
+    stroke-width: 0.5;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sky-day, .sky-night, .stars, .sun, .moon {
+      animation: none;
+    }
+    .sky-day { opacity: 1; }
+    .sky-night, .stars { opacity: 0; }
+    .sun { offset-distance: 35%; opacity: 1; }
+    .moon { opacity: 0; }
+  }
+
+  .banner {
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+  }
+  .banner.info { background: rgba(108,140,255,0.12); border: 1px solid var(--accent); }
+  .banner.warn { background: rgba(255,108,108,0.12); border: 1px solid var(--danger); }
+  .banner.win { background: rgba(108,255,171,0.12); border: 1px solid var(--ok); }
+
+  details.log {
+    margin-top: 1rem;
+  }
+  details.log summary {
+    cursor: pointer;
+    color: var(--muted);
+    padding: 0.5rem 0;
+  }
+  .log-entries {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+  .log-entry {
+    font-size: 0.85rem;
+    color: var(--muted);
+    border-left: 2px solid var(--border);
+    padding-left: 0.5rem;
+  }
+  .log-entry .time { color: var(--accent); margin-right: 0.4rem; }
+
+  footer.actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    z-index: 100;
+  }
+
+  .modal-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    max-width: 480px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+  }
+
+  .modal-header h2 {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+
+  .roles-info-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .roles-info-list li:not(:last-child) {
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .roles-info-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><button type="button" class="header-title-button" data-action="go-home">🐺 Alszik a város</button></h1>
+  <div class="header-right">
+    <button class="small" data-action="toggle-roles-modal">Szerepek leírása</button>
+    <div class="status" id="status-line">Betöltés...</div>
+  </div>
+</header>
+
+<main id="app"></main>
+<div id="modal-root"></div>
+
+<script src="roles.js"></script>
+<script src="game.js"></script>
+<script>
+(function () {
+  const app = document.getElementById('app');
+  const statusLine = document.getElementById('status-line');
+  const modalRoot = document.getElementById('modal-root');
+
+  let rolesModalOpen = false;
+
+  function renderModal() {
+    if (!rolesModalOpen) {
+      modalRoot.innerHTML = '';
+      return;
+    }
+    const rows = ROLES.map((r) => `
+      <li>
+        <div class="roles-info-row">
+          <span class="badge ${r.team}">${roleIcon(r, 16)}</span>
+          <strong>${r.name}</strong>
+        </div>
+        <p class="muted">${r.description}</p>
+      </li>
+    `).join('');
+
+    modalRoot.innerHTML = `
+      <div class="modal-backdrop">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h2>Szerepek leírása</h2>
+            <button class="small" data-action="close-roles-modal">✕</button>
+          </div>
+          <ul class="roles-info-list">${rows}</ul>
+        </div>
+      </div>
+    `;
+  }
+
+  function teamLabel(team) {
+    return { polgarok: 'Polgárok', gyilkosok: 'Gyilkosok', semleges: 'Semleges' }[team] || team;
+  }
+
+  function el(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html.trim();
+    return t.content.firstElementChild;
+  }
+
+  function renderStatus(state) {
+    const phaseLabel = {
+      home: 'Kezdőlap',
+      setup: 'Előkészítés',
+      night: 'Éjszaka',
+      day: 'Nappal',
+      ended: 'Vége',
+    }[state.phase];
+    statusLine.textContent = state.round > 0
+      ? `${state.round}. kör - ${phaseLabel}`
+      : phaseLabel;
+  }
+
+  function renderLog(state) {
+    if (state.log.length === 0) return '';
+    const entries = state.log
+      .map((e) => `<div class="log-entry"><span class="time">${e.time}</span>${escapeHtml(e.text)}</div>`)
+      .join('');
+    return `
+      <details class="log">
+        <summary>Esemény napló (${state.log.length})</summary>
+        <div class="log-entries">${entries}</div>
+      </details>
+    `;
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // Wraps a role's icon markup (see roles.js) in an <svg> tag at the given pixel size.
+  function roleIcon(role, size = 18) {
+    if (!role || !role.icon) return '';
+    return `<svg class="role-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${role.icon}</svg>`;
+  }
+
+  // Idle nap/hold ciklus a város fölött - önálló, újrafelhasználható SVG dísz.
+  // Jelenleg csak a kezdőlapon fut szabadon; később a játék közbeni képernyőkön
+  // (éjszaka/nappal) is be lehet illeszteni, akár a tényleges fázishoz igazítva.
+  function skyWidgetHtml() {
+    return `
+      <div class="sky-widget">
+        <svg viewBox="0 0 200 110" preserveAspectRatio="xMidYMax slice" role="img" aria-label="Nap és hold felváltva kel fel és nyugszik a város fölött">
+          <defs>
+            <linearGradient id="sky-day-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="var(--sky-day-top)"/>
+              <stop offset="100%" stop-color="var(--sky-day-bottom)"/>
+            </linearGradient>
+            <linearGradient id="sky-night-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="var(--sky-night-top)"/>
+              <stop offset="100%" stop-color="var(--sky-night-bottom)"/>
+            </linearGradient>
+            <radialGradient id="sky-sun-grad" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#fff2c9"/>
+              <stop offset="100%" stop-color="var(--sun)"/>
+            </radialGradient>
+            <radialGradient id="sky-moon-grad" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#ffffff"/>
+              <stop offset="100%" stop-color="var(--moon)"/>
+            </radialGradient>
+          </defs>
+
+          <rect class="sky-bg sky-day" x="0" y="0" width="200" height="110" fill="url(#sky-day-grad)"/>
+          <rect class="sky-bg sky-night" x="0" y="0" width="200" height="110" fill="url(#sky-night-grad)"/>
+
+          <g class="stars">
+            <circle cx="20" cy="20" r="1"/>
+            <circle cx="50" cy="12" r="0.8"/>
+            <circle cx="80" cy="25" r="1"/>
+            <circle cx="120" cy="15" r="0.9"/>
+            <circle cx="150" cy="28" r="1"/>
+            <circle cx="175" cy="14" r="0.8"/>
+            <circle cx="35" cy="35" r="0.7"/>
+            <circle cx="165" cy="40" r="0.7"/>
+          </g>
+
+          <circle class="sky-body sun" cx="0" cy="0" r="9"/>
+          <circle class="sky-body moon" cx="0" cy="0" r="8"/>
+
+          <g class="skyline">
+            <path d="M0,110 L0,80 L17,58 L34,80 L34,110 Z"/>
+            <path d="M38,110 L38,65 L58,40 L78,65 L78,110 Z"/>
+            <path d="M82,110 L82,85 L97,68 L112,85 L112,110 Z"/>
+            <path d="M116,110 L116,75 L134,55 L152,75 L152,110 Z"/>
+            <path d="M156,110 L156,88 L200,88 L200,110 Z"/>
+          </g>
+        </svg>
+      </div>
+    `;
+  }
+
+  // ---- Home screen ----
+
+  function renderHome(state) {
+    app.innerHTML = `
+      <div class="card home-card">
+        ${skyWidgetHtml()}
+        <div class="home-emoji">🐺</div>
+        <h2 class="home-title">Alszik a város</h2>
+        <p class="muted">Játékvezetői segédlet: végigvezet az éjszakai és nappali fázisokon, kiosztja a szerepeket, és nyomon követi az eseményeket.</p>
+        <button class="primary" data-action="go-setup">Új játék indítása</button>
+      </div>
+    `;
+  }
+
+  // ---- Setup screen ----
+
+  function renderSetup(state) {
+    const playersHtml = state.players.map((p) => `
+      <li>
+        <span>${escapeHtml(p.name)}</span>
+        <button class="small danger" data-action="remove-player" data-id="${p.id}">✕</button>
+      </li>
+    `).join('');
+
+    const rolesHtml = ROLES.filter((r) => r.id !== 'polgar').map((r) => {
+      const control = r.linkedCountRoleId
+        ? `<span class="linked-count" id="count-${r.id}-display">0</span>`
+        : r.maxCount === 1
+          ? `<button type="button" class="toggle-switch" data-action="toggle-role-single" data-role-id="${r.id}" aria-pressed="false"></button>`
+          : `<input type="number" min="0" id="count-${r.id}" value="0" />`;
+      return `
+        <div class="role-row">
+          <div>
+            <div class="role-title"><span class="badge ${r.team}">${roleIcon(r, 14)}</span><strong>${r.name}</strong></div>
+            <div class="muted">${r.description}</div>
+          </div>
+          ${control}
+        </div>
+      `;
+    }).join('');
+
+    const allAssigned = state.players.length > 0 && state.players.every((p) => p.roleId);
+    const assignedHtml = allAssigned ? `
+      <div class="card">
+        <h2>Kiosztott szerepek</h2>
+        <ul class="player-list">
+          ${state.players.map((p) => {
+            const role = Game.getRole(p.roleId);
+            return `<li><span>${escapeHtml(p.name)}</span><span class="badge ${role.team}">${roleIcon(role, 14)}${role.name}</span></li>`;
+          }).join('')}
+        </ul>
+      </div>
+    ` : '';
+
+    app.innerHTML = `
+      <div class="card">
+        <h2>Játékosok (${state.players.length})</h2>
+        <div class="row">
+          <input type="text" id="new-player-name" placeholder="Játékos neve" />
+          <button class="primary" data-action="add-player">Hozzáadás</button>
+        </div>
+        <ul class="player-list">${playersHtml}</ul>
+      </div>
+
+      <div class="card">
+        <h2>Szerepek beállítása</h2>
+        <p class="muted">Add meg, hány darab legyen az egyes szerepekből. A maradék játékos automatikusan Polgár lesz.</p>
+        ${rolesHtml}
+        <footer class="actions">
+          <button class="primary" data-action="assign-roles" ${state.players.length < 3 ? 'disabled' : ''}>Szerepek kiosztása</button>
+        </footer>
+      </div>
+
+      ${assignedHtml}
+
+      <footer class="actions">
+        <button class="primary" data-action="start-game" ${allAssigned ? '' : 'disabled'}>Játék indítása</button>
+      </footer>
+
+      ${renderLog(state)}
+    `;
+
+    document.getElementById('new-player-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doAddPlayer();
+    });
+
+    // Keep linked-count displays (e.g. Kőműves = number of Gyilkos) in sync as the
+    // narrator types into the role they mirror.
+    ROLES.filter((r) => r.linkedCountRoleId).forEach((r) => {
+      const sourceInput = document.getElementById(`count-${r.linkedCountRoleId}`);
+      const display = document.getElementById(`count-${r.id}-display`);
+      if (!sourceInput || !display) return;
+      const sync = () => { display.textContent = parseInt(sourceInput.value, 10) || 0; };
+      sync();
+      sourceInput.addEventListener('input', sync);
+    });
+  }
+
+  function doAddPlayer() {
+    const input = document.getElementById('new-player-name');
+    Game.addPlayer(input.value);
+    input.value = '';
+  }
+
+  // ---- Night screen ----
+
+  let investigateInfo = null; // { name, team } - investigate result shown until dismissed
+  let linkFirstId = null; // Cupido's first pick, until the second is chosen
+
+  function renderNight(state) {
+    const role = Game.currentNightRole();
+    // Cupido may link in someone the UFO already abducted (it drags their partner
+    // along too), so it sees everyone alive rather than the usual untouchable-filtered list.
+    let targetable = (role && role.nightAction === 'link') ? Game.alivePlayers() : Game.nightTargetablePlayers();
+    if (role && role.id === 'ufo') {
+      targetable = targetable.filter((p) => p.roleId !== 'ufo');
+    }
+
+    if (investigateInfo) {
+      app.innerHTML = `
+        <div class="card">
+          <div class="banner info">
+            <strong>${escapeHtml(investigateInfo.name)}</strong> csapata: <strong>${teamLabel(investigateInfo.team)}</strong>
+          </div>
+          <footer class="actions">
+            <button class="primary" data-action="ack-investigate">Tovább</button>
+          </footer>
+        </div>
+        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    if (!role) {
+      app.innerHTML = `
+        <div class="card">
+          <div class="banner info">Minden éjszakai szerep megvolt.</div>
+          <footer class="actions">
+            <button class="primary" data-action="resolve-night">Éjszaka lezárása</button>
+          </footer>
+        </div>
+        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    if (role.nightAction === 'reveal') {
+      app.innerHTML = `
+        <div class="card">
+          <div class="night-role-header">
+            ${roleIcon(role, 22)}
+            <h2>${role.name}</h2>
+          </div>
+          <p class="prompt">${role.actionPrompt || ''}</p>
+          <footer class="actions">
+            <button class="primary" data-action="ack-reveal">Kész, tovább</button>
+          </footer>
+        </div>
+        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    if (role.nightAction === 'link') {
+      if (!linkFirstId) {
+        const firstOptions = targetable.map((p) => `
+          <button data-action="link-pick-first" data-id="${p.id}">${escapeHtml(p.name)}</button>
+        `).join('');
+        app.innerHTML = `
+          <div class="card">
+            <div class="night-role-header">
+              ${roleIcon(role, 22)}
+              <h2>${role.name}</h2>
+            </div>
+            <p class="prompt">${role.actionPrompt || ''}</p>
+            <p class="muted">Válaszd ki az első embert a párból.</p>
+            <div class="target-grid">${firstOptions}</div>
+            <footer class="actions">
+              <button data-action="skip-night">Kihagyás</button>
+            </footer>
+          </div>
+          ${renderLog(state)}
+        `;
+        return;
+      }
+
+      const firstPlayer = state.players.find((p) => p.id === linkFirstId);
+      const secondOptions = targetable
+        .filter((p) => p.id !== linkFirstId)
+        .map((p) => `<button data-action="link-pick-second" data-id="${p.id}">${escapeHtml(p.name)}</button>`)
+        .join('');
+      app.innerHTML = `
+        <div class="card">
+          <div class="night-role-header">
+            ${roleIcon(role, 22)}
+            <h2>${role.name}</h2>
+          </div>
+          <p class="prompt">Első: <strong>${escapeHtml(firstPlayer ? firstPlayer.name : '?')}</strong> - válaszd ki a másodikat.</p>
+          <div class="target-grid">${secondOptions}</div>
+          <footer class="actions">
+            <button data-action="link-cancel">Vissza</button>
+          </footer>
+        </div>
+        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    const targets = targetable.map((p) => `
+      <button data-action="night-target" data-id="${p.id}">${escapeHtml(p.name)}</button>
+    `).join('');
+
+    app.innerHTML = `
+      <div class="card">
+        <div class="night-role-header">
+          ${roleIcon(role, 22)}
+          <h2>${role.name}</h2>
+        </div>
+        <p class="prompt">${role.actionPrompt || ''}</p>
+        <div class="target-grid">${targets}</div>
+        <footer class="actions">
+          <button data-action="skip-night">Kihagyás</button>
+        </footer>
+      </div>
+      ${renderLog(state)}
+    `;
+  }
+
+  // ---- Day screen ----
+
+  function renderDay(state) {
+    const alive = Game.alivePlayers();
+    const deaths = state.pendingDeaths
+      .map((id) => state.players.find((p) => p.id === id))
+      .filter(Boolean);
+
+    const deathBanner = deaths.length === 0
+      ? `<div class="banner info">Az éjszaka mindenki túlélte.</div>`
+      : `<div class="banner warn">Éjjel meghalt: <strong>${deaths.map((p) => escapeHtml(p.name)).join(', ')}</strong></div>`;
+
+    const breadAction = state.nightActions['pek'];
+    const breadRecipient = breadAction ? state.players.find((p) => p.id === breadAction.targetId) : null;
+    const breadBanner = breadRecipient
+      ? `<div class="banner info">Ma reggel kenyeret kapott: <strong>${escapeHtml(breadRecipient.name)}</strong></div>`
+      : '';
+
+    if (state.pendingHunterShot) {
+      const shooter = state.players.find((p) => p.id === state.pendingHunterShot);
+      const shotTargets = alive.map((p) => `
+        <button data-action="hunter-shot" data-id="${p.id}">${escapeHtml(p.name)}</button>
+      `).join('');
+      app.innerHTML = `
+        <div class="card">
+          <div class="banner warn"><strong>${escapeHtml(shooter ? shooter.name : 'A vadász')}</strong> (Vadász) utolsó tettként lelő valakit - válaszd ki, kit!</div>
+          <div class="target-grid">${shotTargets}</div>
+        </div>
+        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    const targets = alive.map((p) => `
+      <button data-action="eliminate" data-id="${p.id}">${escapeHtml(p.name)}</button>
+    `).join('');
+
+    app.innerHTML = `
+      <div class="card">
+        ${deathBanner}
+        ${breadBanner}
+        <h2>Kiszavazás</h2>
+        <div class="target-grid">${targets}</div>
+        <footer class="actions">
+          <button data-action="no-elimination">Senkit sem szavaznak ki</button>
+        </footer>
+      </div>
+      <footer class="actions">
+        <button class="primary" data-action="next-round">Következő éjszaka</button>
+      </footer>
+      ${renderLog(state)}
+    `;
+  }
+
+  // ---- End screen ----
+
+  function renderEnded(state) {
+    let winnerText;
+    if (state.winner === 'solo') {
+      const soloWinner = state.players.find((p) => p.id === state.soloWinnerId);
+      const soloRole = soloWinner ? Game.getRole(soloWinner.roleId) : null;
+      winnerText = `<strong>${escapeHtml(soloWinner ? soloWinner.name : '?')}</strong>${soloRole ? ` (${soloRole.name})` : ''} nyert!`;
+    } else {
+      winnerText = `<strong>${teamLabel(state.winner)}</strong> győztek!`;
+    }
+    const rows = state.players.map((p) => {
+      const role = Game.getRole(p.roleId);
+      return `<li class="${p.alive ? '' : 'dead'}"><span>${escapeHtml(p.name)}</span><span class="badge ${role.team}">${roleIcon(role, 14)}${role.name}</span></li>`;
+    }).join('');
+
+    app.innerHTML = `
+      <div class="card">
+        <div class="banner win">${winnerText}</div>
+        <h2>Végső szereposztás</h2>
+        <ul class="player-list">${rows}</ul>
+      </div>
+      <footer class="actions">
+        <button class="primary" data-action="reset-game">Új játék</button>
+      </footer>
+      ${renderLog(state)}
+    `;
+  }
+
+  // ---- Main render + event handling ----
+
+  let lastRenderedPhase = null; // only replay the slide-up entrance when the phase actually changes
+
+  function render(state) {
+    renderStatus(state);
+    investigateInfo = state.phase === Game.PHASES.NIGHT ? investigateInfo : null;
+    linkFirstId = state.phase === Game.PHASES.NIGHT ? linkFirstId : null;
+    if (state.phase === Game.PHASES.HOME) renderHome(state);
+    else if (state.phase === Game.PHASES.SETUP) renderSetup(state);
+    else if (state.phase === Game.PHASES.NIGHT) renderNight(state);
+    else if (state.phase === Game.PHASES.DAY) renderDay(state);
+    else if (state.phase === Game.PHASES.ENDED) renderEnded(state);
+    renderModal();
+
+    if (state.phase !== lastRenderedPhase) {
+      app.classList.remove('screen-enter');
+      void app.offsetWidth; // force reflow so the animation restarts
+      app.classList.add('screen-enter');
+      lastRenderedPhase = state.phase;
+    }
+  }
+
+  document.body.addEventListener('click', (e) => {
+    if (e.target.classList.contains('modal-backdrop')) {
+      rolesModalOpen = false;
+      renderModal();
+      return;
+    }
+
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const state = Game.getState();
+
+    try {
+      if (action === 'toggle-roles-modal') { rolesModalOpen = true; renderModal(); }
+      else if (action === 'close-roles-modal') { rolesModalOpen = false; renderModal(); }
+      else if (action === 'go-home') {
+        if (state.phase === Game.PHASES.HOME) return;
+        if (confirm('Biztosan befejezed a jelenlegi játékot és a kezdőlapra lépsz? A mentett állás elvész.')) {
+          Game.resetGame();
+        }
+      }
+      else if (action === 'go-setup') Game.enterSetup();
+      else if (action === 'add-player') doAddPlayer();
+      else if (action === 'remove-player') Game.removePlayer(btn.dataset.id);
+      else if (action === 'toggle-role-single') {
+        btn.setAttribute('aria-pressed', btn.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+      }
+      else if (action === 'assign-roles') {
+        const counts = {};
+        ROLES.filter((r) => r.id !== 'polgar').forEach((r) => {
+          let val;
+          if (r.linkedCountRoleId) {
+            const sourceInput = document.getElementById(`count-${r.linkedCountRoleId}`);
+            val = sourceInput ? (parseInt(sourceInput.value, 10) || 0) : 0;
+          } else if (r.maxCount === 1) {
+            const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+            val = toggle && toggle.getAttribute('aria-pressed') === 'true' ? 1 : 0;
+          } else {
+            val = parseInt(document.getElementById(`count-${r.id}`).value, 10) || 0;
+          }
+          if (val > 0) counts[r.id] = val;
+        });
+        Game.assignRoles(counts);
+      }
+      else if (action === 'start-game') Game.startGame();
+      else if (action === 'night-target') {
+        const role = Game.currentNightRole();
+        if (role.nightAction === 'investigate') {
+          investigateInfo = Game.investigateResult(btn.dataset.id);
+          Game.recordNightAction(btn.dataset.id);
+        } else {
+          Game.recordNightAction(btn.dataset.id);
+        }
+      }
+      else if (action === 'skip-night') Game.skipNightAction();
+      else if (action === 'ack-investigate') { investigateInfo = null; render(state); }
+      else if (action === 'link-pick-first') { linkFirstId = btn.dataset.id; render(state); }
+      else if (action === 'link-pick-second') {
+        Game.recordLinkAction(linkFirstId, btn.dataset.id);
+        linkFirstId = null;
+      }
+      else if (action === 'link-cancel') { linkFirstId = null; render(state); }
+      else if (action === 'ack-reveal') Game.acknowledgeReveal();
+      else if (action === 'resolve-night') Game.resolveNight();
+      else if (action === 'eliminate') Game.eliminatePlayer(btn.dataset.id);
+      else if (action === 'hunter-shot') Game.resolveHunterShot(btn.dataset.id);
+      else if (action === 'no-elimination') Game.noElimination();
+      else if (action === 'next-round') Game.nextRound();
+      else if (action === 'reset-game') {
+        if (confirm('Biztosan új játékot kezdesz? A jelenlegi állás elvész.')) Game.resetGame();
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+  Game.init(render);
+})();
+</script>
+
+</body>
+</html>
