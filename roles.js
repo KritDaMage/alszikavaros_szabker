@@ -15,9 +15,9 @@
 //   nightOrder    - number giving the wake-up order during the night
 //                   (lower = called earlier). null if there's no night action.
 //   actionPrompt  - instruction text shown to the narrator during the night phase
-//   icon          - inner SVG markup (paths/shapes only, no <svg> wrapper) drawn on a
-//                   0-24 / 0-24 viewBox, stroke-based, using currentColor so it inherits
-//                   the surrounding team color. index.html wraps this in an <svg> tag.
+//   emoji         - single emoji shown next to the role's name (badges, night header,
+//                   the roles-info modal). Rendering is entirely up to the device/OS -
+//                   see the note in index.html where it's used.
 //   maxCount      - set to 1 for roles that only ever exist once per game (the setup
 //                   screen then shows an on/off toggle instead of a number stepper).
 //                   Omit for roles that can have several instances (e.g. gyilkos).
@@ -49,7 +49,7 @@ const ROLES = [
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
-    icon: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
+    emoji: '🙂',
   },
   {
     id: 'gyilkos',
@@ -59,7 +59,7 @@ const ROLES = [
     nightAction: 'kill',
     nightOrder: 10,
     actionPrompt: 'A gyilkosok, ébredjetek fel és válasszatok áldozatot!',
-    icon: '<path d="M12 2l2 5h-4z"/><line x1="12" y1="7" x2="12" y2="16"/><line x1="8.5" y1="10" x2="15.5" y2="10"/><rect x="10" y="16" width="4" height="6" rx="1.3"/>',
+    emoji: '🔪',
   },
   {
     id: 'nyomozo',
@@ -69,7 +69,7 @@ const ROLES = [
     nightAction: 'investigate',
     nightOrder: 20,
     actionPrompt: 'Nyomozó, ébredj fel és mutass valakit, akit megvizsgálsz!',
-    icon: '<circle cx="10" cy="10" r="6.5"/><line x1="21" y1="21" x2="14.8" y2="14.8"/>',
+    emoji: '🔍',
     maxCount: 1,
   },
   {
@@ -80,7 +80,7 @@ const ROLES = [
     nightAction: 'protect',
     nightOrder: 5,
     actionPrompt: 'Orvos, ébredj fel és mutasd meg, kit védesz meg ma éjjel!',
-    icon: '<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>',
+    emoji: '💊',
     maxCount: 1,
   },
   {
@@ -91,7 +91,7 @@ const ROLES = [
     nightAction: 'link',
     nightOrder: 2,
     actionPrompt: 'Cupido, ébredj fel és köss össze két embert ma éjjelre!',
-    icon: '<circle cx="9" cy="9" r="4"/><circle cx="15" cy="9" r="4"/><path d="M4.5 12.5L12 20l7.5-7.5"/>',
+    emoji: '💘',
     maxCount: 1,
   },
   {
@@ -102,7 +102,7 @@ const ROLES = [
     nightAction: 'reveal',
     nightOrder: 3,
     actionPrompt: 'Kőművesek, ébredjetek fel, ismerjétek meg egymást, majd aludjatok tovább!',
-    icon: '<rect x="2" y="5" width="9" height="6"/><rect x="13" y="5" width="9" height="6"/><rect x="2" y="13" width="4" height="6"/><rect x="8" y="13" width="9" height="6"/><rect x="19" y="13" width="3" height="6"/>',
+    emoji: '⚒️',
     onceOnly: true,
     linkedCountRoleId: 'gyilkos',
   },
@@ -114,7 +114,7 @@ const ROLES = [
     nightAction: 'abduct',
     nightOrder: 1,
     actionPrompt: 'UFO, ébredj fel és mutasd meg, kit rabolsz el ma éjjel!',
-    icon: '<ellipse cx="12" cy="13" rx="9" ry="3"/><path d="M8.5 13a3.5 3.5 0 0 1 7 0"/><path d="M9 16l-2 5M15 16l2 5M12 16.5v5"/>',
+    emoji: '🛸',
     maxCount: 1,
   },
   {
@@ -125,7 +125,7 @@ const ROLES = [
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
-    icon: '<path d="M4 16a8 8 0 0 1 16 0z"/><rect x="2" y="16" width="20" height="3" rx="1"/>',
+    emoji: '🧰',
     maxCount: 1,
     soloWinIfVotedOut: true,
   },
@@ -137,7 +137,7 @@ const ROLES = [
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
-    icon: '<path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6z"/>',
+    emoji: '🛡️',
     maxCount: 1,
     immuneToKill: true,
   },
@@ -149,7 +149,7 @@ const ROLES = [
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
-    icon: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/>',
+    emoji: '🏹',
     maxCount: 1,
     shootsOnElimination: true,
   },
@@ -161,7 +161,7 @@ const ROLES = [
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
-    icon: '<path d="M5 9h14l-1.3 9.5A2 2 0 0 1 15.7 20H8.3a2 2 0 0 1-2-1.5L5 9z"/><path d="M9 9V6.5a3 3 0 0 1 6 0V9"/>',
+    emoji: '🍃',
     maxCount: 1,
     announceRoleOnDeath: true,
   },
@@ -173,7 +173,7 @@ const ROLES = [
     nightAction: 'gift',
     nightOrder: 4,
     actionPrompt: 'Pék, ébredj fel és add oda a pékárut valakinek!',
-    icon: '<path d="M4 14c0-5 3.5-8 8-8s8 3 8 8-3.5 6-8 6-8-1-8-6z"/><path d="M9 10v8M15 10v8"/>',
+    emoji: '🥖',
     maxCount: 1,
   },
   {
@@ -184,7 +184,7 @@ const ROLES = [
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
-    icon: '<circle cx="12" cy="9" r="5"/><path d="M9 13l-2 8 5-3 5 3-2-8"/>',
+    emoji: '⭐',
     maxCount: 1,
   },
 ];

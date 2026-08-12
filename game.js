@@ -161,13 +161,6 @@ const Game = (() => {
     return getRole(state.nightQueue[0]);
   }
 
-  // Players who may currently be picked as a night-action target: everyone alive,
-  // except whoever is untouchable this night (the UFO's target, or someone Cupido
-  // chain-linked to them). Cupido itself is exempt from this - see recordLinkAction.
-  function nightTargetablePlayers() {
-    return alivePlayers().filter((p) => !state.abductedIds.includes(p.id));
-  }
-
   // Drops any still-pending role from the queue if every one of its living holders is
   // now untouchable (abducted or chain-linked to an abductee) - they have no one left
   // to act with tonight.
@@ -279,10 +272,15 @@ const Game = (() => {
       const targetRole = targetPlayer ? getRole(targetPlayer.roleId) : null;
       // A Katona's immunity extends to whoever Cupido bonded them with tonight.
       const partnerRole = bondPartnerRole(killAction.targetId, linkAction);
-      const immune = (targetRole && targetRole.immuneToKill) || (partnerRole && partnerRole.immuneToKill);
-      if (killAction.targetId !== protectedId && !immune) {
+      const roleImmune = (targetRole && targetRole.immuneToKill) || (partnerRole && partnerRole.immuneToKill);
+      const wasAbducted = state.abductedIds.includes(killAction.targetId);
+      const survivesProtection = killAction.targetId === protectedId;
+
+      if (!survivesProtection && !roleImmune && !wasAbducted) {
         deaths.push(killAction.targetId);
-      } else if (immune) {
+      } else if (wasAbducted) {
+        addLog(`${targetPlayer ? targetPlayer.name : '?'}: a gyilkosok nem érték el, mert aznap éjjel az UFO elrabolta.`);
+      } else if (roleImmune) {
         addLog(`${targetPlayer ? targetPlayer.name : '?'}: a gyilkosok megpróbálták megölni, de túlélte (Katona hatása).`);
       }
     }
@@ -344,9 +342,14 @@ const Game = (() => {
   }
 
   // Investigate result is for the narrator's eyes only - not added to the public log.
+  // An abducted target can still be picked, but the UFO put them out of reach tonight,
+  // so the investigation comes back empty.
   function investigateResult(targetId) {
     const target = state.players.find((p) => p.id === targetId);
     if (!target) return null;
+    if (state.abductedIds.includes(targetId)) {
+      return { name: target.name, abducted: true };
+    }
     const role = getRole(target.roleId);
     return { name: target.name, team: role ? role.team : 'ismeretlen' };
   }
@@ -450,7 +453,6 @@ const Game = (() => {
     getState,
     getRole,
     alivePlayers,
-    nightTargetablePlayers,
     enterSetup,
     addPlayer,
     removePlayer,
