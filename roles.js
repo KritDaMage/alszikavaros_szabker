@@ -12,22 +12,43 @@
 //                   (see Cupido) and is handled by its own UI flow / Game function.
 //                   'reveal' is special: no target is picked at all - the narrator just
 //                   reads the prompt and taps through (see Kőműves).
+//                   'maim' is special: picks a target AND a body part (kéz/nyelv) in
+//                   two steps (see Csonkoló) and is handled by its own UI flow.
 //   nightOrder    - number giving the wake-up order during the night
-//                   (lower = called earlier). null if there's no night action.
-//   actionPrompt  - instruction text shown to the narrator during the night phase
+//                   (lower = called earlier). null if there's no night action. Also
+//                   used to order roles within the pre-game reveal (see preGameReveal).
+//   actionPrompt  - instruction text shown to the narrator during the role's own
+//                   night action (regular night, or 'reveal' roles' one moment).
 //   emoji         - single emoji shown next to the role's name (badges, night header,
 //                   the roles-info modal). Rendering is entirely up to the device/OS -
 //                   see the note in index.html where it's used.
 //   maxCount      - set to 1 for roles that only ever exist once per game (the setup
 //                   screen then shows an on/off toggle instead of a number stepper).
 //                   Omit for roles that can have several instances (e.g. gyilkos).
-//   onceOnly      - set to true for roles whose night action only happens on the very
-//                   first night of the game (round 1) - they're skipped in every
-//                   beginNight() after that, even though they're still alive.
+//   minCount      - lowest allowed count for a plain number-input role (e.g. gyilkos
+//                   must always be at least 1). The setup screen enforces this live
+//                   (red warning + blocks "Szerepek kiosztása") and Game.assignRoles()
+//                   enforces it again as a safety net.
+//   alwaysActive  - true for roles that are simply always in the game (1 of them),
+//                   with no toggle at all in the setup screen - see Nyomozó/Orvos.
+//                   Mutually exclusive with maxCount/linkedCountRoleId.
+//   onceOnly      - set to true to exclude this role from every regular night's queue
+//                   (beginNight()) entirely - for roles whose whole nightAction is a
+//                   pre-game moment, not a recurring one (see Kőműves).
+//   preGameReveal - true if this role gets a one-time moment during "0. éjszaka"
+//                   (PHASES.REVEAL, right after startGame() and before round 1) -
+//                   independent of nightAction/onceOnly, so a role can have both a
+//                   recurring night action AND a pre-game moment (see Csonkoló, who
+//                   learns the gyilkosok pre-game but also acts every night).
+//   preGameRevealPrompt - text shown during that pre-game moment; falls back to
+//                   actionPrompt if omitted (see Kőműves, whose actionPrompt already
+//                   describes the pre-game moment since it has no other night action).
 //   linkedCountRoleId - set to another role's id to make the setup screen show this
 //                   role's headcount as a read-only number that always mirrors that
-//                   other role's count, instead of a toggle/number input (see Kőműves,
-//                   which always matches the number of gyilkos).
+//                   other role's count, instead of a plain number input (see Kőműves,
+//                   which always matches the number of gyilkos). Combine with
+//                   maxCount: 1 to also show a toggle that turns the whole group
+//                   on/off (the mirrored count only counts while it's on).
 //   immuneToKill  - true if the gyilkosok's night kill never works on this role
 //                   (see Katona). Doesn't protect from other death causes (day vote,
 //                   Cupido's bond, a Vadász's shot).
@@ -60,6 +81,7 @@ const ROLES = [
     nightOrder: 10,
     actionPrompt: 'A gyilkosok, ébredjetek fel és válasszatok áldozatot!',
     emoji: '🔪',
+    minCount: 1,
   },
   {
     id: 'nyomozo',
@@ -70,7 +92,7 @@ const ROLES = [
     nightOrder: 20,
     actionPrompt: 'Nyomozó, ébredj fel és mutass valakit, akit megvizsgálsz!',
     emoji: '🔍',
-    maxCount: 1,
+    alwaysActive: true,
   },
   {
     id: 'orvos',
@@ -81,7 +103,7 @@ const ROLES = [
     nightOrder: 5,
     actionPrompt: 'Orvos, ébredj fel és mutasd meg, kit védesz meg ma éjjel!',
     emoji: '💊',
-    maxCount: 1,
+    alwaysActive: true,
   },
   {
     id: 'cupido',
@@ -104,7 +126,22 @@ const ROLES = [
     actionPrompt: 'Kőművesek, ébredjetek fel, ismerjétek meg egymást, majd aludjatok tovább!',
     emoji: '⚒️',
     onceOnly: true,
+    preGameReveal: true,
     linkedCountRoleId: 'gyilkos',
+    maxCount: 1,
+  },
+  {
+    id: 'csonkolo',
+    name: 'Csonkoló',
+    team: 'gyilkosok',
+    description: 'A gyilkosok oldalán áll, és ismeri őket, de a gyilkosok nem ismerik őt. Éjszakánként megcsonkíthatja valaki kezét vagy nyelvét: az illető a következő nappal nem szavazhat (kéz) vagy nem beszélhet (nyelv). Ha az UFO elrabolta a célpontját aznap éjjel, vagy az Orvos épp őt védte, a csonkítás nem érvényesül. Ha a célpont aznap éjjel Cupido kötésében volt, a párja is ugyanúgy megcsonkul.',
+    nightAction: 'maim',
+    nightOrder: 9,
+    actionPrompt: 'Csonkoló, ébredj fel és válaszd ki, kit csonkítasz meg ma éjjel!',
+    emoji: '🪚',
+    maxCount: 1,
+    preGameReveal: true,
+    preGameRevealPrompt: 'Csonkoló, ébredj fel - most megmutatjuk neked, kik a gyilkosok! (Ők nem tudják, hogy te ki vagy.)',
   },
   {
     id: 'ufo',

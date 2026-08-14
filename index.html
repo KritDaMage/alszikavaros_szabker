@@ -193,6 +193,15 @@
     text-decoration: line-through;
   }
 
+  .player-list li.swap-row {
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .player-list li.swap-row.selected {
+    border-color: var(--accent);
+    background: rgba(108,140,255,0.18);
+  }
+
   .badge {
     display: inline-flex;
     align-items: center;
@@ -234,6 +243,13 @@
     display: flex;
     align-items: center;
     gap: 0.6rem;
+  }
+  .card-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
   }
   .role-emoji-lg {
     font-size: 1.8rem;
@@ -288,6 +304,13 @@
     background: var(--accent);
   }
 
+  .toggle-with-count {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
   .target-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -297,6 +320,15 @@
 
   .target-grid button {
     padding: 0.75rem 0.5rem;
+  }
+
+  .target-grid button.selected {
+    border-color: var(--accent);
+    background: rgba(108,140,255,0.18);
+  }
+  .assignee-card.assigned {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .prompt {
@@ -565,6 +597,18 @@
     return `${roleEmoji(Game.getRole(p.roleId))}${escapeHtml(p.name)}`;
   }
 
+  // Role display order: nightOrder ascending (no-night-action roles after all the
+  // night roles, in ROLES array order among themselves), Polgár always last since
+  // it's just the leftover filler. Used to sort the post-assignment roster.
+  const ROLE_SORT_ORDER = [
+    ...ROLES.filter((r) => r.id !== 'polgar').sort((a, b) => (a.nightOrder ?? Infinity) - (b.nightOrder ?? Infinity)).map((r) => r.id),
+    'polgar',
+  ];
+  function roleSortIndex(roleId) {
+    const idx = ROLE_SORT_ORDER.indexOf(roleId);
+    return idx === -1 ? ROLE_SORT_ORDER.length : idx;
+  }
+
   // Idle nap/hold ciklus a város fölött - önálló, újrafelhasználható SVG dísz.
   // Jelenleg csak a kezdőlapon fut szabadon; később a játék közbeni képernyőkön
   // (éjszaka/nappal) is be lehet illeszteni, akár a tényleges fázishoz igazítva.
@@ -595,6 +639,13 @@
 
   // ---- Setup screen ----
 
+  // Role counts/toggles are plain DOM state, but renderSetup() rebuilds the whole
+  // screen from scratch on every add/remove-player - without this draft, that would
+  // wipe out whatever the narrator had already configured. Reset on fresh entry to
+  // setup (see the 'go-setup' action), not on every re-render within it.
+  let roleDraft = { gyilkos: 1 }; // roleId -> number, for plain number inputs (gyilkos)
+  let roleToggleDraft = {}; // roleId -> boolean, for every toggle switch
+
   function renderSetup(state) {
     const playersHtml = state.players.map((p) => `
       <li>
@@ -604,11 +655,26 @@
     `).join('');
 
     const rolesHtml = ROLES.filter((r) => r.id !== 'polgar').map((r) => {
-      const control = r.linkedCountRoleId
-        ? `<span class="linked-count" id="count-${r.id}-display">0</span>`
-        : r.maxCount === 1
-          ? `<button type="button" class="toggle-switch" data-action="toggle-role-single" data-role-id="${r.id}" aria-pressed="false"></button>`
-          : `<input type="number" min="0" id="count-${r.id}" value="0" />`;
+      let control;
+      if (r.alwaysActive) {
+        control = '';
+      } else if (r.linkedCountRoleId && r.maxCount === 1) {
+        const pressed = roleToggleDraft[r.id] ? 'true' : 'false';
+        control = `
+          <div class="toggle-with-count">
+            <button type="button" class="toggle-switch" data-action="toggle-role-single" data-role-id="${r.id}" aria-pressed="${pressed}"></button>
+            <span class="linked-count" id="count-${r.id}-display">0</span>
+          </div>
+        `;
+      } else if (r.linkedCountRoleId) {
+        control = `<span class="linked-count" id="count-${r.id}-display">0</span>`;
+      } else if (r.maxCount === 1) {
+        const pressed = roleToggleDraft[r.id] ? 'true' : 'false';
+        control = `<button type="button" class="toggle-switch" data-action="toggle-role-single" data-role-id="${r.id}" aria-pressed="${pressed}"></button>`;
+      } else {
+        const minCount = r.minCount || 0;
+        control = `<input type="number" min="${minCount}" id="count-${r.id}" value="${roleDraft[r.id] ?? minCount}" />`;
+      }
       return `
         <div class="role-row">
           <div>
@@ -619,19 +685,6 @@
         </div>
       `;
     }).join('');
-
-    const allAssigned = state.players.length > 0 && state.players.every((p) => p.roleId);
-    const assignedHtml = allAssigned ? `
-      <div class="card">
-        <h2>Kiosztott szerepek</h2>
-        <ul class="player-list">
-          ${state.players.map((p) => {
-            const role = Game.getRole(p.roleId);
-            return `<li><span>${escapeHtml(p.name)}</span><span class="badge ${role.team}">${roleEmoji(role)}${role.name}</span></li>`;
-          }).join('')}
-        </ul>
-      </div>
-    ` : '';
 
     app.innerHTML = `
       <div class="card">
@@ -647,16 +700,12 @@
         <h2>Szerepek beállítása</h2>
         <p class="muted">Add meg, hány darab legyen az egyes szerepekből. A maradék játékos automatikusan Polgár lesz.</p>
         ${rolesHtml}
+        <div id="role-capacity-warning"></div>
         <footer class="actions">
-          <button class="primary" data-action="assign-roles" ${state.players.length < 3 ? 'disabled' : ''}>Szerepek kiosztása</button>
+          <button id="auto-assign-btn" data-action="auto-assign-roles" ${state.players.length < 3 ? 'disabled' : ''}>Automatikus sorsolás</button>
+          <button class="primary" id="assign-roles-btn" data-action="assign-roles" ${state.players.length < 3 ? 'disabled' : ''}>Szerepek kiosztása</button>
         </footer>
       </div>
-
-      ${assignedHtml}
-
-      <footer class="actions">
-        <button class="primary" data-action="start-game" ${allAssigned ? '' : 'disabled'}>Játék indítása</button>
-      </footer>
 
       ${renderLog(state)}
     `;
@@ -675,18 +724,228 @@
       sync();
       sourceInput.addEventListener('input', sync);
     });
+
+    const gyilkosInput = document.getElementById('count-gyilkos');
+    if (gyilkosInput) {
+      gyilkosInput.addEventListener('input', () => {
+        roleDraft.gyilkos = parseInt(gyilkosInput.value, 10) || 0;
+        updateRoleAvailability();
+      });
+    }
+    updateRoleAvailability();
+  }
+
+  // Reads the role-count controls straight out of the DOM - shared by the manual
+  // ("Szerepek kiosztása") and automatic ("Automatikus sorsolás") assignment buttons.
+  function collectRoleCounts() {
+    const counts = {};
+    ROLES.filter((r) => r.id !== 'polgar').forEach((r) => {
+      let val;
+      if (r.alwaysActive) {
+        val = 1;
+      } else if (r.linkedCountRoleId) {
+        const sourceInput = document.getElementById(`count-${r.linkedCountRoleId}`);
+        const sourceCount = sourceInput ? (parseInt(sourceInput.value, 10) || 0) : 0;
+        if (r.maxCount === 1) {
+          const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+          val = (toggle && toggle.getAttribute('aria-pressed') === 'true') ? sourceCount : 0;
+        } else {
+          val = sourceCount;
+        }
+      } else if (r.maxCount === 1) {
+        const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+        val = toggle && toggle.getAttribute('aria-pressed') === 'true' ? 1 : 0;
+      } else {
+        val = parseInt(document.getElementById(`count-${r.id}`).value, 10) || 0;
+      }
+      if (val > 0) counts[r.id] = val;
+    });
+    return counts;
+  }
+
+  // Once the players' slots are full (always-active roles + gyilkos count + every
+  // ON toggle's headcount), disable any still-OFF toggle that would overflow them -
+  // it stays locked until a slot frees up (a toggle turns off, gyilkos count drops,
+  // or more players are added).
+  function updateRoleAvailability() {
+    const state = Game.getState();
+    const totalPlayers = state.players.length;
+
+    const gyilkosInput = document.getElementById('count-gyilkos');
+    const gyilkosCount = gyilkosInput ? (parseInt(gyilkosInput.value, 10) || 0) : 0;
+
+    const alwaysActiveCount = ROLES.filter((r) => r.alwaysActive).length;
+    const toggleRoles = ROLES.filter((r) => r.maxCount === 1 && !r.alwaysActive);
+
+    let used = alwaysActiveCount + gyilkosCount;
+    toggleRoles.forEach((r) => {
+      const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+      if (toggle && toggle.getAttribute('aria-pressed') === 'true') {
+        used += r.linkedCountRoleId ? gyilkosCount : 1;
+      }
+    });
+
+    const remaining = totalPlayers - used;
+
+    toggleRoles.forEach((r) => {
+      const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+      if (!toggle) return;
+      if (toggle.getAttribute('aria-pressed') === 'true') {
+        toggle.disabled = false;
+        return;
+      }
+      const cost = r.linkedCountRoleId ? gyilkosCount : 1;
+      toggle.disabled = cost > remaining;
+    });
+
+    if (gyilkosInput) {
+      const usedWithoutGyilkos = used - gyilkosCount;
+      gyilkosInput.max = String(Math.max(0, totalPlayers - usedWithoutGyilkos));
+    }
+
+    // Already over capacity (e.g. a player was removed after roles were configured,
+    // or the gyilkos count was typed in directly) - warn and block assignment.
+    const overflow = -remaining;
+
+    // Roles with a minimum (e.g. at least 1 gyilkos) that isn't currently met. Only
+    // plain number-input roles can have minCount, and gyilkos is the only one so far.
+    const unmetMinimums = ROLES.filter((r) => typeof r.minCount === 'number' && gyilkosCount < r.minCount);
+
+    const warningEl = document.getElementById('role-capacity-warning');
+    if (warningEl) {
+      const messages = [];
+      if (overflow > 0) {
+        messages.push(`Több szerep van kiválasztva, mint ahány játékos van (${overflow} hellyel túl sok). Csökkents valamit, vagy adj hozzá több játékost.`);
+      }
+      unmetMinimums.forEach((r) => {
+        messages.push(`Legalább ${r.minCount} ${r.name} kell.`);
+      });
+      warningEl.innerHTML = messages.map((msg) => `<div class="banner warn">${msg}</div>`).join('');
+    }
+
+    const blocked = totalPlayers < 3 || overflow > 0 || unmetMinimums.length > 0;
+    const assignBtn = document.getElementById('assign-roles-btn');
+    if (assignBtn) assignBtn.disabled = blocked;
+    const autoAssignBtn = document.getElementById('auto-assign-btn');
+    if (autoAssignBtn) autoAssignBtn.disabled = blocked;
   }
 
   function doAddPlayer() {
     const input = document.getElementById('new-player-name');
     Game.addPlayer(input.value);
-    input.value = '';
+    // Game.addPlayer() re-renders the setup screen synchronously, which replaces
+    // this input with a fresh (empty) one - re-query it so focus lands on the new one.
+    const freshInput = document.getElementById('new-player-name');
+    if (freshInput) freshInput.focus();
+  }
+
+  // ---- Role assignment screen ("0. éjszaka") ----
+  // One distinct role at a time, same look as the real night screen (renderNight).
+  // Everyone stays visible on the board throughout: already-assigned players show
+  // their role emoji and are locked. For roles with more than one slot (e.g. 2
+  // gyilkos), pick all of them on this one screen - tap to select/deselect; once
+  // full, tapping a new person bumps the oldest pick (see the click handler).
+  // "Következő" confirms once the count matches; "Vissza" undoes the previous
+  // role's confirmation so it can be redone.
+
+  let assignSelectedIds = [];
+  let swapSelectedId = null; // first tap on the "Szerepek kiosztva" board, until a second tap swaps roles
+
+  function renderAssign(state) {
+    const role = Game.currentAssignmentRole();
+    const canGoBack = state.assignmentHistory.length > 0;
+
+    if (!role) {
+      // Queue empty - everyone has a role. Stay right here instead of dropping back
+      // to the top of the SETUP screen; offer to start, or step back to fix a pick.
+      // Tap two rows to swap their roles, if something needs fixing without a full
+      // "Vissza".
+      const rows = [...state.players].sort((a, b) => roleSortIndex(a.roleId) - roleSortIndex(b.roleId)).map((p) => {
+        const pRole = Game.getRole(p.roleId);
+        const isSelected = p.id === swapSelectedId;
+        return `<li class="swap-row${isSelected ? ' selected' : ''}" data-action="select-swap" data-id="${p.id}"><span>${escapeHtml(p.name)}</span><span class="badge ${pRole.team}">${roleEmoji(pRole)}${pRole.name}</span></li>`;
+      }).join('');
+      app.innerHTML = `
+        <div class="card">
+          <div class="card-header-row">
+            <h2>Szerepek kiosztva</h2>
+            <button data-action="cancel-assignment">Mégse</button>
+          </div>
+          <p class="muted">Koppints két játékosra, hogy kicseréld a szerepüket.</p>
+          <ul class="player-list">${rows}</ul>
+          <footer class="actions">
+            <button data-action="assign-back" ${canGoBack ? '' : 'disabled'}>Vissza</button>
+            <button class="primary" data-action="start-game">Játék indítása</button>
+          </footer>
+        </div>
+        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    const capacity = state.assignmentTotalCounts[role.id] || 1;
+    const promptText = capacity > 1
+      ? `Válassz ki ${capacity} embert, akik ${role.name} lesznek! (${assignSelectedIds.length}/${capacity} kiválasztva)`
+      : `Ki legyen a(z) ${role.name}?`;
+
+    const board = state.players.map((p) => {
+      if (p.roleId) {
+        return `<button class="assignee-card assigned" disabled>${playerLabel(p)}</button>`;
+      }
+      const isSelected = assignSelectedIds.includes(p.id);
+      const label = isSelected ? `${roleEmoji(role)}${escapeHtml(p.name)}` : escapeHtml(p.name);
+      return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-assignee" data-id="${p.id}">${label}</button>`;
+    }).join('');
+
+    app.innerHTML = `
+      <div class="card">
+        <div class="card-header-row">
+          <div class="night-role-header">
+            ${roleEmoji(role, 'role-emoji-lg')}
+            <h2>${role.name}</h2>
+          </div>
+          <button data-action="cancel-assignment">Mégse</button>
+        </div>
+        <p class="prompt">${promptText}</p>
+        <div class="target-grid">${board}</div>
+        <footer class="actions">
+          <button data-action="assign-back" ${canGoBack ? '' : 'disabled'}>Vissza</button>
+          <button class="primary" data-action="confirm-assignment" ${assignSelectedIds.length === capacity ? '' : 'disabled'}>Következő</button>
+        </footer>
+      </div>
+      ${renderLog(state)}
+    `;
+  }
+
+  // ---- Pre-game reveal ("0. éjszaka" bemutatkozás, pl. Kőműves) ----
+
+  function renderReveal(state) {
+    const role = Game.currentPreGameReveal();
+    if (!role) {
+      app.innerHTML = `<div class="card"><div class="banner info">Kész.</div></div>`;
+      return;
+    }
+    app.innerHTML = `
+      <div class="card">
+        <div class="night-role-header">
+          ${roleEmoji(role, 'role-emoji-lg')}
+          <h2>${role.name}</h2>
+        </div>
+        <p class="prompt">${role.preGameRevealPrompt || role.actionPrompt || ''}</p>
+        <footer class="actions">
+          <button class="primary" data-action="ack-pregame-reveal">Kész, tovább</button>
+        </footer>
+      </div>
+      ${renderLog(state)}
+    `;
   }
 
   // ---- Night screen ----
 
   let investigateInfo = null; // { name, team } - investigate result shown until dismissed
-  let linkFirstId = null; // Cupido's first pick, until the second is chosen
+  let linkSelectedIds = []; // Cupido's picks this night - up to 2, toggled on/off
+  let nightSelectedId = null; // single-target night action pick, until confirmed
+  let maimPendingTargetId = null; // Csonkoló's target, confirmed, waiting for a body-part pick
 
   function renderNight(state) {
     const role = Game.currentNightRole();
@@ -726,7 +985,13 @@
       return;
     }
 
-    if (role.nightAction === 'reveal') {
+    if (role.nightAction === 'link') {
+      const capacity = 2;
+      const board = targetable.map((p) => {
+        const isSelected = linkSelectedIds.includes(p.id);
+        return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-link-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+      }).join('');
+
       app.innerHTML = `
         <div class="card">
           <div class="night-role-header">
@@ -734,8 +999,11 @@
             <h2>${role.name}</h2>
           </div>
           <p class="prompt">${role.actionPrompt || ''}</p>
+          <p class="muted">Válassz ki két embert, akiket ma éjjelre összekötsz. (${linkSelectedIds.length}/2 kiválasztva)</p>
+          <div class="target-grid">${board}</div>
           <footer class="actions">
-            <button class="primary" data-action="ack-reveal">Kész, tovább</button>
+            <button data-action="skip-night">Kihagyás</button>
+            <button class="primary" data-action="confirm-link" ${linkSelectedIds.length === capacity ? '' : 'disabled'}>Összekötés</button>
           </footer>
         </div>
         ${renderLog(state)}
@@ -743,11 +1011,12 @@
       return;
     }
 
-    if (role.nightAction === 'link') {
-      if (!linkFirstId) {
-        const firstOptions = targetable.map((p) => `
-          <button data-action="link-pick-first" data-id="${p.id}">${playerLabel(p)}</button>
-        `).join('');
+    if (role.nightAction === 'maim') {
+      if (!maimPendingTargetId) {
+        const targets = targetable.map((p) => {
+          const isSelected = p.id === nightSelectedId;
+          return `<button class="${isSelected ? 'selected' : ''}" data-action="select-night-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+        }).join('');
         app.innerHTML = `
           <div class="card">
             <div class="night-role-header">
@@ -755,10 +1024,10 @@
               <h2>${role.name}</h2>
             </div>
             <p class="prompt">${role.actionPrompt || ''}</p>
-            <p class="muted">Válaszd ki az első embert a párból.</p>
-            <div class="target-grid">${firstOptions}</div>
+            <div class="target-grid">${targets}</div>
             <footer class="actions">
               <button data-action="skip-night">Kihagyás</button>
+              <button class="primary" data-action="confirm-maim-target" ${nightSelectedId ? '' : 'disabled'}>Következő</button>
             </footer>
           </div>
           ${renderLog(state)}
@@ -766,21 +1035,20 @@
         return;
       }
 
-      const firstPlayer = state.players.find((p) => p.id === linkFirstId);
-      const secondOptions = targetable
-        .filter((p) => p.id !== linkFirstId)
-        .map((p) => `<button data-action="link-pick-second" data-id="${p.id}">${playerLabel(p)}</button>`)
-        .join('');
+      const maimTarget = state.players.find((p) => p.id === maimPendingTargetId);
       app.innerHTML = `
         <div class="card">
           <div class="night-role-header">
             ${roleEmoji(role, 'role-emoji-lg')}
             <h2>${role.name}</h2>
           </div>
-          <p class="prompt">Első: <strong>${firstPlayer ? playerLabel(firstPlayer) : '?'}</strong> - válaszd ki a másodikat.</p>
-          <div class="target-grid">${secondOptions}</div>
+          <p class="prompt">Melyik testrészét csonkítod meg ${maimTarget ? escapeHtml(maimTarget.name) : '?'}-nak?</p>
+          <div class="target-grid">
+            <button data-action="confirm-maim-part" data-part="kez">✋ Kéz (nem szavazhat)</button>
+            <button data-action="confirm-maim-part" data-part="nyelv">👅 Nyelv (nem beszélhet)</button>
+          </div>
           <footer class="actions">
-            <button data-action="link-cancel">Vissza</button>
+            <button data-action="cancel-maim-target">Vissza</button>
           </footer>
         </div>
         ${renderLog(state)}
@@ -788,9 +1056,10 @@
       return;
     }
 
-    const targets = targetable.map((p) => `
-      <button data-action="night-target" data-id="${p.id}">${playerLabel(p)}</button>
-    `).join('');
+    const targets = targetable.map((p) => {
+      const isSelected = p.id === nightSelectedId;
+      return `<button class="${isSelected ? 'selected' : ''}" data-action="select-night-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+    }).join('');
 
     app.innerHTML = `
       <div class="card">
@@ -802,6 +1071,7 @@
         <div class="target-grid">${targets}</div>
         <footer class="actions">
           <button data-action="skip-night">Kihagyás</button>
+          <button class="primary" data-action="confirm-night-target" ${nightSelectedId ? '' : 'disabled'}>Következő</button>
         </footer>
       </div>
       ${renderLog(state)}
@@ -809,6 +1079,8 @@
   }
 
   // ---- Day screen ----
+
+  let daySelectedId = null; // single-target day pick (elimination or a Vadász's shot), until confirmed
 
   function renderDay(state) {
     const alive = Game.alivePlayers();
@@ -826,33 +1098,46 @@
       ? `<div class="banner info">Ma reggel kenyeret kapott: <strong>${playerLabel(breadRecipient)}</strong></div>`
       : '';
 
+    const maimBanner = state.pendingMaim
+      .map((m) => ({ ...m, player: state.players.find((p) => p.id === m.targetId) }))
+      .filter((m) => m.player && m.player.alive)
+      .map((m) => `<div class="banner warn"><strong>${escapeHtml(m.player.name)}</strong> ma ${m.bodyPart === 'kez' ? 'nem szavazhat (megcsonkított kéz)' : 'nem beszélhet (megcsonkított nyelv)'}.</div>`)
+      .join('');
+
     if (state.pendingHunterShot) {
       const shooter = state.players.find((p) => p.id === state.pendingHunterShot);
-      const shotTargets = alive.map((p) => `
-        <button data-action="hunter-shot" data-id="${p.id}">${playerLabel(p)}</button>
-      `).join('');
+      const shotTargets = alive.map((p) => {
+        const isSelected = p.id === daySelectedId;
+        return `<button class="${isSelected ? 'selected' : ''}" data-action="select-day-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+      }).join('');
       app.innerHTML = `
         <div class="card">
           <div class="banner warn"><strong>${escapeHtml(shooter ? shooter.name : 'A vadász')}</strong> (Vadász) utolsó tettként lelő valakit - válaszd ki, kit!</div>
           <div class="target-grid">${shotTargets}</div>
+          <footer class="actions">
+            <button class="primary" data-action="confirm-hunter-shot" ${daySelectedId ? '' : 'disabled'}>Következő</button>
+          </footer>
         </div>
         ${renderLog(state)}
       `;
       return;
     }
 
-    const targets = alive.map((p) => `
-      <button data-action="eliminate" data-id="${p.id}">${playerLabel(p)}</button>
-    `).join('');
+    const targets = alive.map((p) => {
+      const isSelected = p.id === daySelectedId;
+      return `<button class="${isSelected ? 'selected' : ''}" data-action="select-day-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+    }).join('');
 
     app.innerHTML = `
       <div class="card">
         ${deathBanner}
         ${breadBanner}
+        ${maimBanner}
         <h2>Kiszavazás</h2>
         <div class="target-grid">${targets}</div>
         <footer class="actions">
           <button data-action="no-elimination">Senkit sem szavaznak ki</button>
+          <button class="primary" data-action="confirm-eliminate" ${daySelectedId ? '' : 'disabled'}>Kiszavazás megerősítése</button>
         </footer>
       </div>
       <footer class="actions">
@@ -898,9 +1183,16 @@
   function render(state) {
     renderStatus(state);
     investigateInfo = state.phase === Game.PHASES.NIGHT ? investigateInfo : null;
-    linkFirstId = state.phase === Game.PHASES.NIGHT ? linkFirstId : null;
+    linkSelectedIds = state.phase === Game.PHASES.NIGHT ? linkSelectedIds : [];
+    nightSelectedId = state.phase === Game.PHASES.NIGHT ? nightSelectedId : null;
+    maimPendingTargetId = state.phase === Game.PHASES.NIGHT ? maimPendingTargetId : null;
+    assignSelectedIds = state.phase === Game.PHASES.ASSIGN ? assignSelectedIds : [];
+    swapSelectedId = state.phase === Game.PHASES.ASSIGN ? swapSelectedId : null;
+    daySelectedId = state.phase === Game.PHASES.DAY ? daySelectedId : null;
     if (state.phase === Game.PHASES.HOME) renderHome(state);
     else if (state.phase === Game.PHASES.SETUP) renderSetup(state);
+    else if (state.phase === Game.PHASES.ASSIGN) renderAssign(state);
+    else if (state.phase === Game.PHASES.REVEAL) renderReveal(state);
     else if (state.phase === Game.PHASES.NIGHT) renderNight(state);
     else if (state.phase === Game.PHASES.DAY) renderDay(state);
     else if (state.phase === Game.PHASES.ENDED) renderEnded(state);
@@ -935,52 +1227,112 @@
           Game.resetGame();
         }
       }
-      else if (action === 'go-setup') Game.enterSetup();
+      else if (action === 'go-setup') {
+        roleDraft = { gyilkos: 0 };
+        roleToggleDraft = {};
+        Game.enterSetup();
+      }
       else if (action === 'add-player') doAddPlayer();
       else if (action === 'remove-player') Game.removePlayer(btn.dataset.id);
       else if (action === 'toggle-role-single') {
-        btn.setAttribute('aria-pressed', btn.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+        const nowOn = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', nowOn ? 'true' : 'false');
+        roleToggleDraft[btn.dataset.roleId] = nowOn;
+        updateRoleAvailability();
       }
-      else if (action === 'assign-roles') {
-        const counts = {};
-        ROLES.filter((r) => r.id !== 'polgar').forEach((r) => {
-          let val;
-          if (r.linkedCountRoleId) {
-            const sourceInput = document.getElementById(`count-${r.linkedCountRoleId}`);
-            val = sourceInput ? (parseInt(sourceInput.value, 10) || 0) : 0;
-          } else if (r.maxCount === 1) {
-            const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
-            val = toggle && toggle.getAttribute('aria-pressed') === 'true' ? 1 : 0;
-          } else {
-            val = parseInt(document.getElementById(`count-${r.id}`).value, 10) || 0;
-          }
-          if (val > 0) counts[r.id] = val;
-        });
-        Game.assignRoles(counts);
-      }
-      else if (action === 'start-game') Game.startGame();
-      else if (action === 'night-target') {
-        const role = Game.currentNightRole();
-        if (role.nightAction === 'investigate') {
-          investigateInfo = Game.investigateResult(btn.dataset.id);
-          Game.recordNightAction(btn.dataset.id);
+      else if (action === 'assign-roles') { swapSelectedId = null; Game.beginRoleAssignment(collectRoleCounts()); }
+      else if (action === 'auto-assign-roles') { swapSelectedId = null; Game.autoAssignRoles(collectRoleCounts()); }
+      else if (action === 'toggle-assignee') {
+        const id = btn.dataset.id;
+        const role = Game.currentAssignmentRole();
+        const capacity = role ? (state.assignmentTotalCounts[role.id] || 1) : 1;
+        const idx = assignSelectedIds.indexOf(id);
+        if (idx >= 0) {
+          assignSelectedIds.splice(idx, 1);
         } else {
-          Game.recordNightAction(btn.dataset.id);
+          if (assignSelectedIds.length >= capacity) assignSelectedIds.shift(); // bump the oldest pick
+          assignSelectedIds.push(id);
+        }
+        render(state);
+      }
+      else if (action === 'confirm-assignment') {
+        Game.assignRoleToPlayers(assignSelectedIds);
+        assignSelectedIds = [];
+      }
+      else if (action === 'assign-back') {
+        assignSelectedIds = [];
+        swapSelectedId = null;
+        Game.stepBackAssignment();
+      }
+      else if (action === 'cancel-assignment') {
+        assignSelectedIds = [];
+        swapSelectedId = null;
+        Game.cancelRoleAssignment();
+      }
+      else if (action === 'select-swap') {
+        const id = btn.dataset.id;
+        if (swapSelectedId === null || swapSelectedId === id) {
+          swapSelectedId = swapSelectedId === id ? null : id;
+          render(state);
+        } else {
+          const firstId = swapSelectedId;
+          // Clear the selection before swapping - Game.swapPlayerRoles() re-renders
+          // synchronously via save(), so it must already be null by then or the
+          // just-swapped player would still show as selected afterwards.
+          swapSelectedId = null;
+          Game.swapPlayerRoles(firstId, id);
         }
       }
-      else if (action === 'skip-night') Game.skipNightAction();
-      else if (action === 'ack-investigate') { investigateInfo = null; render(state); }
-      else if (action === 'link-pick-first') { linkFirstId = btn.dataset.id; render(state); }
-      else if (action === 'link-pick-second') {
-        Game.recordLinkAction(linkFirstId, btn.dataset.id);
-        linkFirstId = null;
+      else if (action === 'start-game') Game.startGame();
+      else if (action === 'select-night-target') { nightSelectedId = btn.dataset.id; render(state); }
+      else if (action === 'confirm-night-target') {
+        const role = Game.currentNightRole();
+        if (role.nightAction === 'investigate') {
+          investigateInfo = Game.investigateResult(nightSelectedId);
+        }
+        Game.recordNightAction(nightSelectedId);
+        nightSelectedId = null;
       }
-      else if (action === 'link-cancel') { linkFirstId = null; render(state); }
-      else if (action === 'ack-reveal') Game.acknowledgeReveal();
+      else if (action === 'confirm-maim-target') {
+        maimPendingTargetId = nightSelectedId;
+        nightSelectedId = null;
+        render(state);
+      }
+      else if (action === 'cancel-maim-target') { maimPendingTargetId = null; render(state); }
+      else if (action === 'confirm-maim-part') {
+        const targetId = maimPendingTargetId;
+        maimPendingTargetId = null;
+        Game.recordMaimAction(targetId, btn.dataset.part);
+      }
+      else if (action === 'skip-night') { nightSelectedId = null; maimPendingTargetId = null; Game.skipNightAction(); }
+      else if (action === 'ack-investigate') { investigateInfo = null; render(state); }
+      else if (action === 'toggle-link-target') {
+        const id = btn.dataset.id;
+        const idx = linkSelectedIds.indexOf(id);
+        if (idx >= 0) {
+          linkSelectedIds.splice(idx, 1);
+        } else {
+          if (linkSelectedIds.length >= 2) linkSelectedIds.shift(); // bump the oldest pick
+          linkSelectedIds.push(id);
+        }
+        render(state);
+      }
+      else if (action === 'confirm-link') {
+        Game.recordLinkAction(linkSelectedIds[0], linkSelectedIds[1]);
+        linkSelectedIds = [];
+      }
+      else if (action === 'ack-pregame-reveal') Game.acknowledgePreGameReveal();
       else if (action === 'resolve-night') Game.resolveNight();
-      else if (action === 'eliminate') Game.eliminatePlayer(btn.dataset.id);
-      else if (action === 'hunter-shot') Game.resolveHunterShot(btn.dataset.id);
-      else if (action === 'no-elimination') Game.noElimination();
+      else if (action === 'select-day-target') { daySelectedId = btn.dataset.id; render(state); }
+      else if (action === 'confirm-eliminate') {
+        Game.eliminatePlayer(daySelectedId);
+        daySelectedId = null;
+      }
+      else if (action === 'confirm-hunter-shot') {
+        Game.resolveHunterShot(daySelectedId);
+        daySelectedId = null;
+      }
+      else if (action === 'no-elimination') { daySelectedId = null; Game.noElimination(); }
       else if (action === 'next-round') Game.nextRound();
       else if (action === 'reset-game') {
         if (confirm('Biztosan új játékot kezdesz? A jelenlegi állás elvész.')) Game.resetGame();

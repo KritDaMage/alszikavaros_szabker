@@ -9,6 +9,8 @@ const Game = (() => {
   const PHASES = {
     HOME: 'home',
     SETUP: 'setup',
+    ASSIGN: 'assign',
+    REVEAL: 'reveal',
     NIGHT: 'night',
     DAY: 'day',
     ENDED: 'ended',
@@ -22,6 +24,11 @@ const Game = (() => {
       players: [], // { id, name, roleId, alive }
       round: 0,
       phase: PHASES.HOME,
+      assignmentQueue: [], // roleIds still waiting for a player during the "0. éjszaka" manual assignment
+      assignmentTotalCounts: {}, // roleId -> how many were originally requested this game
+      assignmentHistory: [], // [{ roleId, playerIds }] completed steps, for the "Vissza" button
+      pendingReveals: [], // roleIds still needing their once-only "meet each other" moment
+                          // (see PHASES.REVEAL) - shown right before round 1, not during it
       nightQueue: [], // roleIds in order, still waiting to act this night
       nightActions: {}, // roleId -> { targetId }
       abductedIds: [], // playerIds untouchable this night - the UFO's target, plus anyone
@@ -30,6 +37,9 @@ const Game = (() => {
                         // for this night only.
       pendingDeaths: [], // result of the current night's resolution, until announced
       pendingHunterShot: null, // playerId of a just-eliminated Vadász, waiting for their shot target
+      pendingMaim: [], // [{ targetId, bodyPart: 'kez' | 'nyelv' }] - Csonkoló's victim(s) for
+                        // the upcoming day only (2 if Cupido's bond dragged in a partner).
+                        // Overwritten fresh every resolveNight().
       pekDeathRound: null, // round the Pék died in, or null - starts the starvation countdown
       pekConsecutiveAbductions: 0, // nights in a row the UFO has taken the Pék
       log: [], // { round, phase, text, time }
@@ -84,15 +94,19 @@ const Game = (() => {
 
   // ---- Setup phase ----
 
+  function newPlayer(name) {
+    return {
+      id: 'p' + Date.now() + Math.random().toString(36).slice(2, 7),
+      name,
+      roleId: null,
+      alive: true,
+    };
+  }
+
   function addPlayer(name) {
     const trimmed = (name || '').trim();
     if (!trimmed) return;
-    state.players.push({
-      id: 'p' + Date.now() + Math.random().toString(36).slice(2, 7),
-      name: trimmed,
-      roleId: null,
-      alive: true,
-    });
+    state.players.push(newPlayer(trimmed));
     save();
   }
 
@@ -101,9 +115,90 @@ const Game = (() => {
     save();
   }
 
-  // roleCounts: { roleId: count } - any roles not listed (typically 'polgar')
-  // fill the remaining players.
-  function assignRoles(roleCounts, fillerRoleId = 'polgar') {
+  // Manual role assignment ("0. éjszaka"): instead of a random shuffle, the narrator
+  // goes role by role - just like a real night - and picks who gets each one. The
+  // queue holds each DISTINCT role once (in nightOrder, no-night-action roles last);
+  // roles with more than one slot (e.g. 2 gyilkos) are filled all at once from a
+  // single screen instead of one-at-a-time. Whoever is left once the queue is empty
+  // becomes fillerRoleId.
+  //
+  // roleCounts: { roleId: count } - any roles not listed (typically 'polgar', which
+  // is never queued - it's always the leftover filler) get 0.
+  function beginRoleAssignment(roleCounts, fillerRoleId = 'polgar') {
+    ROLES.filter((r) => typeof r.minCount === 'number').forEach((r) => {
+      if ((roleCounts[r.id] || 0) < r.minCount) {
+        throw new Error(`Legalább ${r.minCount} ${r.name} kell.`);
+      }
+    });
+
+    const distinctRoles = [...ROLES]
+      .filter((r) => r.id !== fillerRoleId && (roleCounts[r.id] || 0) > 0)
+      .sort((a, b) => (a.nightOrder ?? Infinity) - (b.nightOrder ?? Infinity))
+      .map((r) => r.id);
+
+    const totalSlots = distinctRoles.reduce((sum, id) => sum + (roleCounts[id] || 0), 0);
+    if (totalSlots > state.players.length) {
+      throw new Error('Több szerep lett megadva, mint ahány játékos van.');
+    }
+
+    state.players.forEach((p) => { p.roleId = null; p.alive = true; });
+    state.assignmentQueue = distinctRoles;
+    state.assignmentTotalCounts = { ...roleCounts };
+    state.assignmentHistory = [];
+    state.phase = PHASES.ASSIGN;
+    addLog('Szerepek kiosztása elkezdődött (0. éjszaka).');
+    save();
+  }
+
+  function currentAssignmentRole() {
+    if (state.phase !== PHASES.ASSIGN || state.assignmentQueue.length === 0) return null;
+    return getRole(state.assignmentQueue[0]);
+  }
+
+  function unassignedPlayers() {
+    return state.players.filter((p) => !p.roleId);
+  }
+
+  // Assigns the current role to every player in playerIds at once - there must be
+  // exactly as many as the role's configured count (the UI is expected to enforce
+  // this before calling in, but it's double-checked here too).
+  function assignRoleToPlayers(playerIds, fillerRoleId = 'polgar') {
+    const role = currentAssignmentRole();
+    if (!role) return;
+    const needed = state.assignmentTotalCounts[role.id] || 1;
+    const uniqueIds = [...new Set(playerIds)].filter((id) => {
+      const p = state.players.find((pl) => pl.id === id);
+      return p && !p.roleId;
+    });
+    if (uniqueIds.length !== needed) return;
+
+    uniqueIds.forEach((id) => {
+      const p = state.players.find((pl) => pl.id === id);
+      p.roleId = role.id;
+      addLog(`${p.name}: ${role.name} szerepet kapta.`);
+    });
+    state.assignmentHistory.push({ roleId: role.id, playerIds: uniqueIds });
+    state.assignmentQueue.shift();
+
+    if (state.assignmentQueue.length === 0) {
+      // Stay in ASSIGN (renderAssign shows a "Játék indítása" screen once the queue
+      // is empty) instead of dropping back to the full SETUP screen.
+      state.players.forEach((p) => { if (!p.roleId) p.roleId = fillerRoleId; });
+      addLog('Szerepek kiosztva.');
+    }
+    save();
+  }
+
+  // Instant random shuffle - the classic alternative to the manual role-by-role flow.
+  // roleCounts: { roleId: count } - any roles not listed (typically 'polgar') fill
+  // the remaining players.
+  function autoAssignRoles(roleCounts, fillerRoleId = 'polgar') {
+    ROLES.filter((r) => typeof r.minCount === 'number').forEach((r) => {
+      if ((roleCounts[r.id] || 0) < r.minCount) {
+        throw new Error(`Legalább ${r.minCount} ${r.name} kell.`);
+      }
+    });
+
     const pool = [];
     Object.entries(roleCounts).forEach(([roleId, count]) => {
       for (let i = 0; i < count; i++) pool.push(roleId);
@@ -124,7 +219,52 @@ const Game = (() => {
       p.alive = true;
     });
 
-    addLog(`Szerepek kiosztva ${state.players.length} játékos között.`);
+    // Land on the same "Szerepek kiosztva" screen the manual flow ends on (empty
+    // queue = renderAssign shows the roster + swap + "Játék indítása" right away).
+    state.assignmentQueue = [];
+    state.assignmentTotalCounts = { ...roleCounts };
+    state.assignmentHistory = [];
+    state.phase = PHASES.ASSIGN;
+    addLog(`Szerepek automatikusan kisorsolva ${state.players.length} játékos között.`);
+    save();
+  }
+
+  // Undoes the most recently confirmed role and puts it back at the front of the
+  // queue, so the narrator can redo it with different people.
+  function stepBackAssignment() {
+    if (state.phase !== PHASES.ASSIGN || state.assignmentHistory.length === 0) return;
+    const last = state.assignmentHistory.pop();
+    last.playerIds.forEach((id) => {
+      const p = state.players.find((pl) => pl.id === id);
+      if (p) p.roleId = null;
+    });
+    state.assignmentQueue.unshift(last.roleId);
+    addLog(`Visszalépés: ${getRole(last.roleId).name} kiosztása visszavonva.`);
+    save();
+  }
+
+  // Swaps two already-assigned players' roles - lets the narrator fix a mistake on
+  // the "Szerepek kiosztva" board without stepping all the way back.
+  function swapPlayerRoles(idA, idB) {
+    if (idA === idB) return;
+    const a = state.players.find((p) => p.id === idA);
+    const b = state.players.find((p) => p.id === idB);
+    if (!a || !b) return;
+    const tmp = a.roleId;
+    a.roleId = b.roleId;
+    b.roleId = tmp;
+    addLog(`${a.name} és ${b.name} szerepet cseréltek.`);
+    save();
+  }
+
+  function cancelRoleAssignment() {
+    if (state.phase !== PHASES.ASSIGN) return;
+    state.players.forEach((p) => { p.roleId = null; });
+    state.assignmentQueue = [];
+    state.assignmentTotalCounts = {};
+    state.assignmentHistory = [];
+    state.phase = PHASES.SETUP;
+    addLog('Szerepek kiosztása megszakítva.');
     save();
   }
 
@@ -135,9 +275,45 @@ const Game = (() => {
     if (state.players.some((p) => !p.roleId)) {
       throw new Error('Előbb osszátok ki a szerepeket.');
     }
-    state.round = 1;
-    addLog('A játék elkezdődött.');
-    beginNight();
+
+    // preGameReveal roles (e.g. Kőműves, Csonkoló) get their moment here, during
+    // "0. éjszaka", regardless of whether roles were assigned manually or
+    // automatically - not folded into round 1's night queue.
+    const revealRoles = ROLES
+      .filter((r) => r.preGameReveal)
+      .filter((r) => alivePlayers().some((p) => p.roleId === r.id))
+      .sort((a, b) => (a.nightOrder ?? Infinity) - (b.nightOrder ?? Infinity))
+      .map((r) => r.id);
+
+    if (revealRoles.length > 0) {
+      state.pendingReveals = revealRoles;
+      state.phase = PHASES.REVEAL;
+      addLog('0. éjszaka: bemutatkozás.');
+    } else {
+      state.round = 1;
+      addLog('A játék elkezdődött.');
+      beginNight();
+    }
+    save();
+  }
+
+  function currentPreGameReveal() {
+    if (state.phase !== PHASES.REVEAL || state.pendingReveals.length === 0) return null;
+    return getRole(state.pendingReveals[0]);
+  }
+
+  function acknowledgePreGameReveal() {
+    const role = currentPreGameReveal();
+    if (!role) return;
+    addLog(`${role.name}: megismerték egymást.`);
+    state.pendingReveals.shift();
+
+    if (state.pendingReveals.length === 0) {
+      state.round = 1;
+      addLog('A játék elkezdődött.');
+      beginNight();
+    }
+    save();
   }
 
   // ---- Night phase ----
@@ -148,8 +324,10 @@ const Game = (() => {
     state.abductedIds = [];
     state.pendingDeaths = [];
     const rolesAlive = new Set(alivePlayers().map((p) => p.roleId));
+    // onceOnly roles never appear in a regular night's queue - they got their
+    // moment pre-game, in PHASES.REVEAL (see startGame()).
     state.nightQueue = ROLES
-      .filter((r) => r.nightAction && rolesAlive.has(r.id) && (!r.onceOnly || state.round === 1))
+      .filter((r) => r.nightAction && rolesAlive.has(r.id) && !r.onceOnly)
       .sort((a, b) => a.nightOrder - b.nightOrder)
       .map((r) => r.id);
     addLog(`${state.round}. éjszaka kezdődik.`);
@@ -215,12 +393,16 @@ const Game = (() => {
     save();
   }
 
-  // For 'reveal' roles (e.g. Kőműves): no target to pick, the narrator just confirms
-  // the role's action happened and moves on.
-  function acknowledgeReveal() {
+  // Csonkoló's action picks a target AND a body part - the actual restriction
+  // (can't vote / can't speak tomorrow) is worked out in resolveNight(), since it
+  // depends on whether the target was abducted this same night.
+  function recordMaimAction(targetId, bodyPart) {
     const role = currentNightRole();
-    if (!role || role.nightAction !== 'reveal') return;
-    addLog(`${role.name}: megismerték egymást.`);
+    if (!role || role.nightAction !== 'maim') return;
+    if (!targetId || (bodyPart !== 'kez' && bodyPart !== 'nyelv')) return;
+    state.nightActions[role.id] = { targetId, bodyPart };
+    const target = state.players.find((p) => p.id === targetId);
+    addLog(`${role.name}: ${target ? target.name : '?'} - ${bodyPart === 'kez' ? 'kéz' : 'nyelv'} megcsonkítva.`);
     state.nightQueue.shift();
     save();
   }
@@ -308,6 +490,40 @@ const Game = (() => {
         addLog(`${p ? p.name : '?'} meghalt az éjszaka.${suffix}`);
       });
     }
+
+    // Csonkoló: tomorrow's speech/vote restriction(s) - void if the target was
+    // abducted or the Orvos protected them (same as death), but Cupido's bond still
+    // drags the partner into the same restriction, same as it does with death.
+    // Always overwritten fresh - no maim tonight clears yesterday's.
+    const maimAction = state.nightActions['csonkolo'];
+    const newPendingMaim = [];
+
+    if (maimAction && maimAction.targetId) {
+      const target = state.players.find((p) => p.id === maimAction.targetId);
+      const wasAbducted = state.abductedIds.includes(maimAction.targetId);
+      const wasProtected = protectAction && protectAction.targetId === maimAction.targetId;
+
+      if (wasAbducted) {
+        addLog(`${target ? target.name : '?'}: a Csonkoló nem érte el, mert aznap éjjel az UFO elrabolta.`);
+      } else if (wasProtected) {
+        addLog(`${target ? target.name : '?'}: az Orvos a csonkítástól is megvédte.`);
+      } else {
+        newPendingMaim.push({ targetId: maimAction.targetId, bodyPart: maimAction.bodyPart });
+
+        if (linkAction && linkAction.pairIds) {
+          const [a, b] = linkAction.pairIds;
+          const partnerId = maimAction.targetId === a ? b : maimAction.targetId === b ? a : null;
+          if (partnerId) {
+            const partner = state.players.find((p) => p.id === partnerId);
+            newPendingMaim.push({ targetId: partnerId, bodyPart: maimAction.bodyPart });
+            const partLabel = maimAction.bodyPart === 'kez' ? 'kéz' : 'nyelv';
+            addLog(`${partner ? partner.name : '?'}: a kötés miatt szintén megcsonkult (${partLabel}).`);
+          }
+        }
+      }
+    }
+
+    state.pendingMaim = newPendingMaim;
 
     // Pék: track consecutive UFO abductions while he's still alive.
     const pekPlayer = state.players.find((p) => p.roleId === 'pek');
@@ -432,8 +648,12 @@ const Game = (() => {
 
   // ---- Misc ----
 
+  // Carries the player names (but not roles/roster changes) over into the new game -
+  // it's almost always the same group playing again.
   function resetGame() {
+    const previousNames = state.players.map((p) => p.name);
     state = freshState();
+    state.players = previousNames.map(newPlayer);
     save();
   }
 
@@ -456,12 +676,21 @@ const Game = (() => {
     enterSetup,
     addPlayer,
     removePlayer,
-    assignRoles,
+    beginRoleAssignment,
+    currentAssignmentRole,
+    unassignedPlayers,
+    assignRoleToPlayers,
+    stepBackAssignment,
+    swapPlayerRoles,
+    autoAssignRoles,
+    cancelRoleAssignment,
     startGame,
+    currentPreGameReveal,
+    acknowledgePreGameReveal,
     currentNightRole,
     recordNightAction,
     recordLinkAction,
-    acknowledgeReveal,
+    recordMaimAction,
     skipNightAction,
     resolveNight,
     investigateResult,
