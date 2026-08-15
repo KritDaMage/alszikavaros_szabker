@@ -10,15 +10,12 @@
 //                   use this to decide what target-picker UI to show.
 //                   'link' is special: it picks TWO players instead of one
 //                   (see Cupido) and is handled by its own UI flow / Game function.
-//                   'reveal' is special: no target is picked at all - the narrator just
-//                   reads the prompt and taps through (see Kőműves).
 //                   'maim' is special: picks a target AND a body part (kéz/nyelv) in
 //                   two steps (see Csonkoló) and is handled by its own UI flow.
 //   nightOrder    - number giving the wake-up order during the night
-//                   (lower = called earlier). null if there's no night action. Also
-//                   used to order roles within the pre-game reveal (see preGameReveal).
+//                   (lower = called earlier). null if there's no night action.
 //   actionPrompt  - instruction text shown to the narrator during the role's own
-//                   night action (regular night, or 'reveal' roles' one moment).
+//                   night action.
 //   emoji         - single emoji shown next to the role's name (badges, night header,
 //                   the roles-info modal). Rendering is entirely up to the device/OS -
 //                   see the note in index.html where it's used.
@@ -32,17 +29,6 @@
 //   alwaysActive  - true for roles that are simply always in the game (1 of them),
 //                   with no toggle at all in the setup screen - see Nyomozó/Orvos.
 //                   Mutually exclusive with maxCount/linkedCountRoleId.
-//   onceOnly      - set to true to exclude this role from every regular night's queue
-//                   (beginNight()) entirely - for roles whose whole nightAction is a
-//                   pre-game moment, not a recurring one (see Kőműves).
-//   preGameReveal - true if this role gets a one-time moment during "0. éjszaka"
-//                   (PHASES.REVEAL, right after startGame() and before round 1) -
-//                   independent of nightAction/onceOnly, so a role can have both a
-//                   recurring night action AND a pre-game moment (see Csonkoló, who
-//                   learns the gyilkosok pre-game but also acts every night).
-//   preGameRevealPrompt - text shown during that pre-game moment; falls back to
-//                   actionPrompt if omitted (see Kőműves, whose actionPrompt already
-//                   describes the pre-game moment since it has no other night action).
 //   linkedCountRoleId - set to another role's id to make the setup screen show this
 //                   role's headcount as a read-only number that always mirrors that
 //                   other role's count, instead of a plain number input (see Kőműves,
@@ -57,6 +43,10 @@
 //   shootsOnElimination - true if being voted out during the day lets this player
 //                   take one more living player down with them before the round
 //                   resolves (see Vadász).
+//   revealRoleOnDeath - true if dying overnight gets this role its own separate
+//                   morning announcement naming the role itself - see Sarki
+//                   fűszeres. Unlike the plain death banner (which only names the
+//                   player), this reveals who they were.
 
 const ROLES = [
   {
@@ -75,7 +65,7 @@ const ROLES = [
     team: 'gyilkosok',
     description: 'Éjjel a többi gyilkossal együtt kiválaszt egy áldozatot.',
     nightAction: 'kill',
-    nightOrder: 10,
+    nightOrder: 1,
     actionPrompt: 'A gyilkosok, ébredjetek fel és válasszatok áldozatot!',
     emoji: '🔪',
     minCount: 1,
@@ -86,7 +76,7 @@ const ROLES = [
     team: 'polgarok',
     description: 'Éjjel megvizsgálhat egy játékost, hogy megtudja, gyilkos-e.',
     nightAction: 'investigate',
-    nightOrder: 20,
+    nightOrder: 5,
     actionPrompt: 'Nyomozó, ébredj fel és mutass valakit, akit megvizsgálsz!',
     emoji: '🔍',
     alwaysActive: true,
@@ -97,7 +87,7 @@ const ROLES = [
     team: 'polgarok',
     description: 'Éjjel megvédhet egy játékost a gyilkosságtól (önmagát is).',
     nightAction: 'protect',
-    nightOrder: 5,
+    nightOrder: 4,
     actionPrompt: 'Orvos, ébredj fel és mutasd meg, kit védesz meg ma éjjel!',
     emoji: '🩹',
     alwaysActive: true,
@@ -108,7 +98,7 @@ const ROLES = [
     team: 'polgarok',
     description: 'Éjjel összeköt két embert arra az éjszakára: ami az egyikkel történik (meghal), az a másikkal is megtörténik. Saját magát is választhatja az egyik félnek. Azt is beköthet, akit az UFO aznap éjjel elrabolt - ilyenkor a párja is az UFO áldozata lesz, így az UFO ezen az éjjelen ketten viszi el. Minden éjjel újraköthet.',
     nightAction: 'link',
-    nightOrder: 2,
+    nightOrder: 3,
     actionPrompt: 'Cupido, ébredj fel és köss össze két embert ma éjjelre!',
     emoji: '💘',
     maxCount: 1,
@@ -117,13 +107,11 @@ const ROLES = [
     id: 'komuves',
     name: 'Kőműves',
     team: 'polgarok',
-    description: 'Jó barátok, akik ismerik egymást, és tudják, hogy egyikük sem gyilkos. A játék első éjszakáján felébrednek, hogy megismerjék egymást, utána viszont semmi különleges szerepük nincs - onnantól úgy játszanak, mint a polgárok. Mindig annyian vannak, ahány gyilkos van a játékban.',
-    nightAction: 'reveal',
-    nightOrder: 3,
-    actionPrompt: 'Kőművesek, ébredjetek fel, ismerjétek meg egymást, majd aludjatok tovább!',
+    description: 'Jó barátok, akik tudják, hogy egyikük sem gyilkos - a szerepek kiosztásakor (a "0. éjszakán") a játékvezető elárulja nekik, kik a többi kőműves. Ezután semmi különleges szerepük nincs, onnantól úgy játszanak, mint a polgárok. Mindig annyian vannak, ahány gyilkos van a játékban.',
+    nightAction: null,
+    nightOrder: null,
+    actionPrompt: null,
     emoji: '⚒️',
-    onceOnly: true,
-    preGameReveal: true,
     linkedCountRoleId: 'gyilkos',
     maxCount: 1,
   },
@@ -131,14 +119,12 @@ const ROLES = [
     id: 'csonkolo',
     name: 'Csonkoló',
     team: 'gyilkosok',
-    description: 'A gyilkosok oldalán áll, és ismeri őket, de a gyilkosok nem ismerik őt. Éjszakánként megcsonkíthatja valaki kezét vagy nyelvét: az illető a következő nappal nem szavazhat (kéz) vagy nem beszélhet (nyelv). Ha az UFO elrabolta a célpontját aznap éjjel, vagy az Orvos épp őt védte, a csonkítás nem érvényesül. Ha a célpont aznap éjjel Cupido kötésében volt, a párja is ugyanúgy megcsonkul.',
+    description: 'A gyilkosok oldalán áll, és ismeri őket (a szerepek kiosztásakor a játékvezető elárulja neki, kik ők), de a gyilkosok nem ismerik őt. Éjszakánként megcsonkíthatja valaki kezét vagy nyelvét: az illető a következő nappal nem szavazhat (kéz) vagy nem beszélhet (nyelv). Ha az UFO elrabolta a célpontját aznap éjjel, vagy az Orvos épp őt védte, a csonkítás nem érvényesül. Ha a célpont aznap éjjel Cupido kötésében volt, a párja is ugyanúgy megcsonkul.',
     nightAction: 'maim',
-    nightOrder: 9,
+    nightOrder: 6,
     actionPrompt: 'Csonkoló, ébredj fel és válaszd ki, kit csonkítasz meg ma éjjel!',
     emoji: '🪚',
     maxCount: 1,
-    preGameReveal: true,
-    preGameRevealPrompt: 'Csonkoló, ébredj fel - most megmutatjuk neked, kik a gyilkosok! (Ők nem tudják, hogy te ki vagy.)',
   },
   {
     id: 'ufo',
@@ -146,7 +132,7 @@ const ROLES = [
     team: 'polgarok',
     description: 'Éjjel elrabol valakit: azon az éjszakán nem célozható, és ha éjszakai szerepe van, az nem érvényesül (pl. ha az egyetlen élő gyilkost viszi el, az nem tud ölni). Saját magát nem viheti el. Másnap nappal és a következő éjjel már minden normális.',
     nightAction: 'abduct',
-    nightOrder: 1,
+    nightOrder: 2,
     actionPrompt: 'UFO, ébredj fel és mutasd meg, kit rabolsz el ma éjjel!',
     emoji: '🛸',
     maxCount: 1,
@@ -154,7 +140,7 @@ const ROLES = [
   {
     id: 'gyarimunkas',
     name: 'Gyári munkás',
-    team: 'polgarok',
+    team: 'semleges',
     description: 'Célja, hogy nappal kiszavazzák - ha ez sikerül, egyedül ő nyer, és a játéknak azonnal vége. Ha éjjel ölik meg, nem éri el a célját, és a játék normálisan folytatódik. Nincs feladata éjszaka.',
     nightAction: null,
     nightOrder: null,
@@ -191,12 +177,13 @@ const ROLES = [
     id: 'fuszeres',
     name: 'Sarki fűszeres',
     team: 'polgarok',
-    description: 'Nincs feladata. Csak egy hétköznapi lakos a boltjával.',
+    description: 'Nincs feladata. Csak egy hétköznapi lakos a boltjával. Ha meghal, a narrátor bejelenti, hogy ő volt a Sarki fűszeres.',
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
     emoji: '🍃',
     maxCount: 1,
+    revealRoleOnDeath: true,
   },
   {
     id: 'pek',
@@ -204,7 +191,7 @@ const ROLES = [
     team: 'polgarok',
     description: 'Éjszakánként pékárut ad valakinek - ennek önmagában nincs hatása, a narrátor csak minden reggel bejelenti, ki kapott kenyeret. Ha a Pék meghal, 3 éjszakával később éhen hal a város és a gyilkosok győznek, ha addig másképp nem dőlt el a játék. Ugyanez történik akkor is, ha az UFO három egymást követő éjszakán elrabolja.',
     nightAction: 'gift',
-    nightOrder: 4,
+    nightOrder: 7,
     actionPrompt: 'Pék, ébredj fel és add oda a pékárut valakinek!',
     emoji: '🥖',
     maxCount: 1,
@@ -220,4 +207,17 @@ const ROLES = [
     emoji: '⭐',
     maxCount: 1,
   },
+];
+
+// Canonical role order, shared by everything that lists every role in a fixed
+// reading order: the setup screen falls back to this for anything missing from
+// its own SETUP_ROLE_ORDER (index.html), the post-assignment roster/night
+// summary/ended screen (index.html's ROLE_SORT_ORDER), and game.js's manual
+// "0. éjszaka" assignment queue (beginRoleAssignment) - so roles get asked for
+// in the same order they're later displayed in. Polgár is never actually queued
+// for assignment (it's always the leftover filler), so its position here only
+// matters for the display-only consumers.
+const ROLE_ORDER = [
+  'gyilkos', 'csonkolo', 'nyomozo', 'orvos', 'ufo', 'cupido', 'komuves',
+  'vadasz', 'katona', 'pek', 'fuszeres', 'polgarmester', 'polgar', 'gyarimunkas',
 ];

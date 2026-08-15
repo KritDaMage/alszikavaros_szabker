@@ -10,7 +10,6 @@ const Game = (() => {
     HOME: 'home',
     SETUP: 'setup',
     ASSIGN: 'assign',
-    REVEAL: 'reveal',
     NIGHT: 'night',
     DAY: 'day',
     ENDED: 'ended',
@@ -27,8 +26,11 @@ const Game = (() => {
       assignmentQueue: [], // roleIds still waiting for a player during the "0. éjszaka" manual assignment
       assignmentTotalCounts: {}, // roleId -> how many were originally requested this game
       assignmentHistory: [], // [{ roleId, playerIds }] completed steps, for the "Vissza" button
-      pendingReveals: [], // roleIds still needing their once-only "meet each other" moment
-                          // (see PHASES.REVEAL) - shown right before round 1, not during it
+      assignmentWasManual: false, // true if beginRoleAssignment() (role-by-role) produced the
+                                   // current roster, false for autoAssignRoles() (instant shuffle) -
+                                   // the "Szerepek kiosztva" roster only allows tap-to-swap when
+                                   // this is false, since manual assignment already has its own
+                                   // "Vissza" undo and roles get announced as they're handed out.
       nightQueue: [], // roleIds in order, still waiting to act this night
       nightActions: {}, // roleId -> { targetId }
       nightActionHistory: [], // snapshots taken before each recorded/skipped night
@@ -49,7 +51,19 @@ const Game = (() => {
       pekConsecutiveAbductions: 0, // nights in a row the UFO has taken the Pék
       winner: null, // null | 'polgarok' | 'gyilkosok' | 'solo'
       soloWinnerId: null, // playerId, only set when winner === 'solo' (e.g. Gyári munkás)
+      killsPerNight: 1, // how many targets the gyilkosok pick together each night - set at setup
+      dayTimerMinutes: 7, // length of the day discussion timer - set at setup
     };
+  }
+
+  function setKillsPerNight(n) {
+    state.killsPerNight = Math.max(1, Math.round(Number(n)) || 1);
+    save();
+  }
+
+  function setDayTimerMinutes(n) {
+    state.dayTimerMinutes = Math.max(1, Math.round(Number(n)) || 7);
+    save();
   }
 
   function save() {
@@ -64,7 +78,10 @@ const Game = (() => {
   function load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      state = raw ? JSON.parse(raw) : freshState();
+      // Merge onto freshState() rather than using the parsed save as-is - a save
+      // from before some field existed (e.g. killsPerNight/dayTimerMinutes) would
+      // otherwise load with that field missing/undefined instead of its default.
+      state = raw ? { ...freshState(), ...JSON.parse(raw) } : freshState();
     } catch (e) {
       state = freshState();
     }
@@ -77,6 +94,16 @@ const Game = (() => {
 
   function alivePlayers() {
     return state.players.filter((p) => p.alive);
+  }
+
+  // The configured killsPerNight, clamped to how many living players actually
+  // exist tonight. Without this, a killsPerNight set higher than the surviving
+  // population (only possible once the game has shrunk well past its start, since
+  // checkWinCondition() ends the game once gyilkosok >= masok) would leave the
+  // Gyilkos permanently unable to reach the exact target count the UI asks for -
+  // stuck skipping forever instead of ever killing again.
+  function killCapacity() {
+    return Math.min(state.killsPerNight || 1, alivePlayers().length);
   }
 
   // ---- Home phase ----
@@ -112,10 +139,11 @@ const Game = (() => {
 
   // Manual role assignment ("0. éjszaka"): instead of a random shuffle, the narrator
   // goes role by role - just like a real night - and picks who gets each one. The
-  // queue holds each DISTINCT role once (in nightOrder, no-night-action roles last);
-  // roles with more than one slot (e.g. 2 gyilkos) are filled all at once from a
-  // single screen instead of one-at-a-time. Whoever is left once the queue is empty
-  // becomes fillerRoleId.
+  // queue holds each DISTINCT role once, in ROLE_ORDER (roles.js) - the same order
+  // the post-assignment roster/night summary/ended screen display everyone in, so
+  // roles get asked for in the order they're later shown in; roles with more than
+  // one slot (e.g. 2 gyilkos) are filled all at once from a single screen instead
+  // of one-at-a-time. Whoever is left once the queue is empty becomes fillerRoleId.
   //
   // roleCounts: { roleId: count } - any roles not listed (typically 'polgar', which
   // is never queued - it's always the leftover filler) get 0.
@@ -128,7 +156,11 @@ const Game = (() => {
 
     const distinctRoles = [...ROLES]
       .filter((r) => r.id !== fillerRoleId && (roleCounts[r.id] || 0) > 0)
-      .sort((a, b) => (a.nightOrder ?? Infinity) - (b.nightOrder ?? Infinity))
+      .sort((a, b) => {
+        const ia = ROLE_ORDER.indexOf(a.id);
+        const ib = ROLE_ORDER.indexOf(b.id);
+        return (ia === -1 ? ROLE_ORDER.length : ia) - (ib === -1 ? ROLE_ORDER.length : ib);
+      })
       .map((r) => r.id);
 
     const totalSlots = distinctRoles.reduce((sum, id) => sum + (roleCounts[id] || 0), 0);
@@ -140,6 +172,7 @@ const Game = (() => {
     state.assignmentQueue = distinctRoles;
     state.assignmentTotalCounts = { ...roleCounts };
     state.assignmentHistory = [];
+    state.assignmentWasManual = true;
     state.phase = PHASES.ASSIGN;
     save();
   }
@@ -216,6 +249,7 @@ const Game = (() => {
     state.assignmentQueue = [];
     state.assignmentTotalCounts = { ...roleCounts };
     state.assignmentHistory = [];
+    state.assignmentWasManual = false;
     state.phase = PHASES.ASSIGN;
     save();
   }
@@ -234,8 +268,11 @@ const Game = (() => {
   }
 
   // Swaps two already-assigned players' roles - lets the narrator fix a mistake on
-  // the "Szerepek kiosztva" board without stepping all the way back.
+  // the "Szerepek kiosztva" board without stepping all the way back. Only offered
+  // after an automatic draw (see assignmentWasManual) - manual assignment has its
+  // own "Vissza" undo and already announced each role as it was handed out.
   function swapPlayerRoles(idA, idB) {
+    if (state.assignmentWasManual) return;
     if (idA === idB) return;
     const a = state.players.find((p) => p.id === idA);
     const b = state.players.find((p) => p.id === idB);
@@ -256,6 +293,10 @@ const Game = (() => {
     save();
   }
 
+  // Any role-specific pre-game info (e.g. Kőműves learning who the other Kőműves
+  // are, Csonkoló learning who the gyilkosok are) is the narrator's job to share
+  // right here, during "0. éjszaka" - the roster on this same screen already shows
+  // everyone's role, so there's no separate app step for it.
   function startGame() {
     if (state.players.length < 3) {
       throw new Error('Legalább 3 játékos kell a kezdéshez.');
@@ -263,41 +304,8 @@ const Game = (() => {
     if (state.players.some((p) => !p.roleId)) {
       throw new Error('Előbb osszátok ki a szerepeket.');
     }
-
-    // preGameReveal roles (e.g. Kőműves, Csonkoló) get their moment here, during
-    // "0. éjszaka", regardless of whether roles were assigned manually or
-    // automatically - not folded into round 1's night queue.
-    const revealRoles = ROLES
-      .filter((r) => r.preGameReveal)
-      .filter((r) => alivePlayers().some((p) => p.roleId === r.id))
-      .sort((a, b) => (a.nightOrder ?? Infinity) - (b.nightOrder ?? Infinity))
-      .map((r) => r.id);
-
-    if (revealRoles.length > 0) {
-      state.pendingReveals = revealRoles;
-      state.phase = PHASES.REVEAL;
-    } else {
-      state.round = 1;
-      beginNight();
-    }
-    save();
-  }
-
-  function currentPreGameReveal() {
-    if (state.phase !== PHASES.REVEAL || state.pendingReveals.length === 0) return null;
-    return getRole(state.pendingReveals[0]);
-  }
-
-  function acknowledgePreGameReveal() {
-    const role = currentPreGameReveal();
-    if (!role) return;
-    state.pendingReveals.shift();
-
-    if (state.pendingReveals.length === 0) {
-      state.round = 1;
-      beginNight();
-    }
-    save();
+    state.round = 1;
+    beginNight();
   }
 
   // ---- Night phase ----
@@ -315,13 +323,14 @@ const Game = (() => {
     // via timing. index.html's renderNight shows a "mock" turn (no one selectable,
     // just "Tovább") whenever nobody can currently act it out - see roleHasActor().
     const rolesInGame = new Set(state.players.map((p) => p.roleId));
-    // onceOnly roles never appear in a regular night's queue - they got their
-    // moment pre-game, in PHASES.REVEAL (see startGame()).
     state.nightQueue = ROLES
-      .filter((r) => r.nightAction && rolesInGame.has(r.id) && !r.onceOnly)
+      .filter((r) => r.nightAction && rolesInGame.has(r.id))
       .sort((a, b) => a.nightOrder - b.nightOrder)
       .map((r) => r.id);
-    save();
+    // In practice this never starts empty (Orvos/Nyomozó are always in rolesInGame),
+    // but resolve immediately if it ever did rather than getting stuck with nothing
+    // to render.
+    finishNightStep();
   }
 
   function currentNightRole() {
@@ -351,6 +360,18 @@ const Game = (() => {
     save();
   }
 
+  // Called after every action/skip once the queue has already been shifted - once
+  // nothing's left, the night resolves itself immediately instead of waiting for a
+  // separate "Éjszaka lezárása" confirmation screen. resolveNight() does its own
+  // save(), so this is used in place of a trailing save() call, not alongside one.
+  function finishNightStep() {
+    if (state.nightQueue.length === 0) {
+      resolveNight();
+    } else {
+      save();
+    }
+  }
+
   function recordNightAction(targetId) {
     const role = currentNightRole();
     if (!role) return;
@@ -362,7 +383,22 @@ const Game = (() => {
       state.abductedIds.push(targetId);
     }
 
-    save();
+    finishNightStep();
+  }
+
+  // Gyilkos picks state.killsPerNight targets at once (1 by default, configurable at
+  // setup) - its own recorder since the generic single-target one only ever handles
+  // exactly one pick. Stored as targetIds (array) instead of targetId.
+  function recordKillAction(targetIds) {
+    const role = currentNightRole();
+    if (!role || role.id !== 'gyilkos') return;
+    const capacity = killCapacity();
+    const uniqueIds = [...new Set(targetIds)].filter(Boolean);
+    if (uniqueIds.length !== capacity) return;
+    state.nightActionHistory.push(snapshotNightState(role.id));
+    state.nightActions[role.id] = { targetIds: uniqueIds };
+    state.nightQueue.shift();
+    finishNightStep();
   }
 
   // Cupido-style actions pick two players instead of one, so they get their own recorder.
@@ -382,7 +418,7 @@ const Game = (() => {
       state.abductedIds.push(idA);
     }
 
-    save();
+    finishNightStep();
   }
 
   // Csonkoló's action picks a target AND a body part - the actual restriction
@@ -395,7 +431,7 @@ const Game = (() => {
     state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { targetId, bodyPart };
     state.nightQueue.shift();
-    save();
+    finishNightStep();
   }
 
   function skipNightAction() {
@@ -403,7 +439,7 @@ const Game = (() => {
     if (!role) return;
     state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightQueue.shift();
-    save();
+    finishNightStep();
   }
 
   // The playerId of whoever is bonded to playerId via tonight's Cupido link, or null.
@@ -438,23 +474,38 @@ const Game = (() => {
     const linkAction = state.nightActions['cupido'];
     const deaths = [];
 
-    if (killAction && killAction.targetId) {
-      const protectedId = protectAction ? protectAction.targetId : null;
-      const targetPlayer = state.players.find((p) => p.id === killAction.targetId);
+    // Gyilkos now wakes before the UFO (see ROLE_ORDER/nightOrder in roles.js), so
+    // by the time the UFO abducts someone, the kill's already been picked - unlike
+    // every other night role, whose turn simply doesn't happen if they're abducted
+    // first (see roleHasActor() in index.html). To keep the UFO able to void the
+    // kill the same way ("ha az egyetlen élő gyilkost viszi el, az nem tud ölni"),
+    // check retroactively here: if every living Gyilkos got abducted tonight, the
+    // kill never happened, no matter who was picked.
+    const livingGyilkosok = state.players.filter((p) => p.alive && p.roleId === 'gyilkos');
+    const allGyilkosokAbducted = livingGyilkosok.length > 0
+      && livingGyilkosok.every((p) => state.abductedIds.includes(p.id));
+
+    // Gyilkos can pick more than one target a night (see state.killsPerNight) -
+    // each one is checked independently against the same immunity/protection/
+    // abduction rules.
+    const killTargetIds = (killAction && !allGyilkosokAbducted) ? (killAction.targetIds || []) : [];
+    const protectedId = protectAction ? protectAction.targetId : null;
+    killTargetIds.forEach((targetId) => {
+      const targetPlayer = state.players.find((p) => p.id === targetId);
       const targetRole = targetPlayer ? getRole(targetPlayer.roleId) : null;
       // A Katona's immunity extends to whoever Cupido bonded them with tonight.
-      const partnerRole = bondPartnerRole(killAction.targetId, linkAction);
+      const partnerRole = bondPartnerRole(targetId, linkAction);
       const roleImmune = (targetRole && targetRole.immuneToKill) || (partnerRole && partnerRole.immuneToKill);
-      const wasAbducted = state.abductedIds.includes(killAction.targetId);
+      const wasAbducted = state.abductedIds.includes(targetId);
       // The Orvos's protection bond-transfers too - protecting one half of tonight's
       // Cupido pair shields the other half from the kill as well.
       const survivesProtection = protectedId !== null
-        && (killAction.targetId === protectedId || bondPartnerId(killAction.targetId, linkAction) === protectedId);
+        && (targetId === protectedId || bondPartnerId(targetId, linkAction) === protectedId);
 
       if (!survivesProtection && !roleImmune && !wasAbducted) {
-        deaths.push(killAction.targetId);
+        deaths.push(targetId);
       }
-    }
+    });
 
     // Cupido's bond: whatever happened to one of tonight's linked pair happens
     // to the other too - if one died tonight, so does their partner.
@@ -618,12 +669,16 @@ const Game = (() => {
 
   // ---- Misc ----
 
-  // Carries the player names (but not roles/roster changes) over into the new game -
-  // it's almost always the same group playing again.
+  // Carries the player names and game settings (but not roles/roster changes) over
+  // into the new game - it's almost always the same group playing again.
   function resetGame() {
     const previousNames = state.players.map((p) => p.name);
+    const previousKillsPerNight = state.killsPerNight;
+    const previousDayTimerMinutes = state.dayTimerMinutes;
     state = freshState();
     state.players = previousNames.map(newPlayer);
+    state.killsPerNight = previousKillsPerNight;
+    state.dayTimerMinutes = previousDayTimerMinutes;
     save();
   }
 
@@ -646,6 +701,9 @@ const Game = (() => {
     enterSetup,
     addPlayer,
     removePlayer,
+    setKillsPerNight,
+    killCapacity,
+    setDayTimerMinutes,
     beginRoleAssignment,
     currentAssignmentRole,
     unassignedPlayers,
@@ -655,10 +713,9 @@ const Game = (() => {
     autoAssignRoles,
     cancelRoleAssignment,
     startGame,
-    currentPreGameReveal,
-    acknowledgePreGameReveal,
     currentNightRole,
     recordNightAction,
+    recordKillAction,
     recordLinkAction,
     recordMaimAction,
     skipNightAction,
