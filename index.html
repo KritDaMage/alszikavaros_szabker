@@ -243,7 +243,6 @@
 
   .player-list li.dead {
     opacity: 0.45;
-    text-decoration: line-through;
   }
 
   .row-left {
@@ -412,9 +411,13 @@
     /* Fixed height (not min-height) - emoji glyphs commonly render taller than
        plain text at the same font-size, so a min-height-only box was still growing
        (and dragging the whole grid row along with it) the moment one got added.
-       overflow:hidden clips the box to this exact size no matter what's inside.
        Two lines' worth now, since several bond-transferred actions can stack up
-       on one tile at once. */
+       on one tile at once. overflow:visible (not hidden) - the fixed height still
+       keeps every tile in a row the same height, but an emoji taller than that
+       (or a third line, if one ever stacks up) is allowed to spill past this box's
+       edge instead of being silently sliced off - better to poke out a little
+       than to lose part of a glyph.
+    */
     height: 2.9rem;
     line-height: 1.35rem;
     margin-top: 0.4rem;
@@ -422,7 +425,7 @@
     border-top: 1px solid var(--border);
     text-align: left;
     white-space: normal;
-    overflow: hidden;
+    overflow: visible;
     word-break: break-word;
   }
 
@@ -507,6 +510,9 @@
        left-aligned inside this (correctly centered) box - that was the actual
        ~100px shift all along, not a box-positioning problem. */
     text-align: center;
+    /* Positioning context for .sky-timer-overlay (the day countdown, sat above
+       the house so the sun/moon passes behind the number, not behind the house). */
+    position: relative;
   }
   .sky-arc-area {
     position: relative;
@@ -526,6 +532,18 @@
   .sun-emoji { animation-name: sky-sun-arc; }
   .moon-emoji { animation-name: sky-moon-arc; }
   .town-emoji { font-size: 3.6rem; margin-top: -0.25rem; }
+
+  /* The day discussion countdown, laid over the sky area above the house instead
+     of sitting in its own row underneath the whole widget - the sun's arc (see
+     .sky-emoji above, low points around y:70) runs right through this same spot,
+     so it passes visibly behind the number instead of the two never overlapping. */
+  .sky-timer-overlay {
+    position: absolute;
+    left: 50%;
+    top: 85px;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+  }
 
   @keyframes sky-sun-arc {
     0%   { offset-distance: 0%;   opacity: 0; }
@@ -595,8 +613,17 @@
   }
   .sky-timer-text {
     font-variant-numeric: tabular-nums;
-    font-size: 1rem;
+    font-size: 3.8rem;
+    font-weight: 700;
     color: var(--text);
+    /* Taller/narrower digits, closer to a digital-clock face than the default
+       system sans - falls back to a plain condensed hint on the default font
+       where "Arial Narrow" isn't installed. */
+    font-family: 'Arial Narrow', 'Segoe UI Condensed', Arial, sans-serif;
+    font-stretch: condensed;
+    /* Stays readable when the sun/moon (see .sky-timer-overlay) passes directly
+       behind the number. */
+    text-shadow: 0 0 6px var(--bg), 0 0 12px var(--bg);
   }
 
   .banner {
@@ -1073,12 +1100,17 @@
   // block behind both the home screen's idle nap/hold loop and the state-driven
   // in-game version below, so they can't visually drift apart. arcHtml is whatever
   // goes inside .sky-arc-area (the sun/moon span(s)); extraClass lets a caller add
-  // its own modifier without duplicating the house/arc structure itself.
-  function skyWidgetHtml(arcHtml, extraClass = '') {
+  // its own modifier without duplicating the house/arc structure itself. overlayHtml
+  // (see .sky-timer-overlay) sits on top of the house instead of below the whole
+  // widget - aria-hidden lives on the two decorative pieces individually now
+  // instead of the outer wrapper, so overlayHtml (real info, not decoration) stays
+  // reachable by assistive tech.
+  function skyWidgetHtml(arcHtml, extraClass = '', overlayHtml = '') {
     return `
-      <div class="sky-widget-emoji${extraClass ? ' ' + extraClass : ''}" aria-hidden="true">
-        <div class="sky-arc-area">${arcHtml}</div>
-        <div class="town-emoji">🏘️</div>
+      <div class="sky-widget-emoji${extraClass ? ' ' + extraClass : ''}">
+        <div class="sky-arc-area" aria-hidden="true">${arcHtml}</div>
+        <div class="town-emoji" aria-hidden="true">🏘️</div>
+        ${overlayHtml}
       </div>
     `;
   }
@@ -1157,14 +1189,16 @@
     if (!running) daySunEntered = true;
     const arcHtml = `<span class="sky-emoji sky-emoji-manual${revealClass}" style="${skyArcPosition(fraction)}">☀️</span>`;
     // No restart option once it's running - it's a one-shot "start the discussion"
-    // button, not a resettable stopwatch.
+    // button, not a resettable stopwatch. Once running, the countdown itself sits
+    // laid over the house (see .sky-timer-overlay) instead of below the whole
+    // widget - the Start button stays a normal button underneath, since there's
+    // nothing to lay it over yet.
+    const timerOverlay = running
+      ? `<span class="sky-timer-text sky-timer-overlay">${remainingMs > 0 ? formatCountdown(remainingMs) : 'Lejárt'}</span>`
+      : '';
     return `
-      ${skyWidgetHtml(arcHtml, 'sky-widget-inline')}
-      <div class="sky-timer-col">
-        ${running
-          ? `<span class="sky-timer-text">${remainingMs > 0 ? formatCountdown(remainingMs) : 'Lejárt'}</span>`
-          : `<button class="small" data-action="start-day-timer">Start</button>`}
-      </div>
+      ${skyWidgetHtml(arcHtml, 'sky-widget-inline', timerOverlay)}
+      ${running ? '' : `<div class="sky-timer-col"><button class="small" data-action="start-day-timer">Start</button></div>`}
     `;
   }
 
@@ -1584,9 +1618,18 @@
       investigatePopupActive = true;
       const result = Game.investigateResult(investigatePendingTargetId);
       const label = result && result.abducted ? 'Elrabolva' : teamLabelSingular(result ? result.team : '');
+      // Elrabolva isn't a team, just the UFO having put them out of reach - its own
+      // emoji. "Gyilkos" only means the gyilkosok TEAM (investigateResult() never
+      // reveals the exact role), and Csonkoló is on that team too, so both of the
+      // team's role emoji lead the label - the narrator can't tell which from this
+      // alone, same as in the game itself.
+      const icon = result && result.abducted ? roleActionEmoji('ufo')
+        : result && result.team === 'gyilkosok' ? `${roleActionEmoji('gyilkos')}${roleActionEmoji('csonkolo')}`
+        : result && result.team === 'polgarok' ? roleActionEmoji('polgar')
+        : '';
       // Same .reason-line markup as the mock round's "meghalt/elrabolta" popup - not
       // .prompt - so the two boxes end up pixel-identical instead of drifting apart.
-      popupHtml = `<div class="reason-line">${label}</div>`;
+      popupHtml = `<div class="reason-line">${icon ? `${icon} ` : ''}${label}</div>`;
     } else if (maimPendingTargetId) {
       maimPopupActive = true;
       popupDismissAction = 'cancel-maim-target';
@@ -1760,14 +1803,20 @@
       : role.id === 'ufo' ? { tentativeAbductedId: nightSelectedId }
       : role.id === 'orvos' ? { tentativeProtectedId: nightSelectedId }
       : undefined;
+    // Protecting someone the UFO already took is moot - they're untouchable
+    // tonight regardless of the bond, same as a voided kill/maim - so the Orvos's
+    // own 🩹 preview (and the bond-transfer partner's, if any) shows dimmed as
+    // soon as an already-abducted candidate is tapped, not just after confirming.
+    const orvosTargetAbducted = role.id === 'orvos' && !!nightSelectedId && state.abductedIds.includes(nightSelectedId);
     const targets = targetable.map((p) => {
       const isSelected = p.id === nightSelectedId;
       // The UFO can't abduct itself, and there's no point in the Nyomozó investigating
       // themselves - both still shown on the board, just disabled.
       const selectable = !((role.id === 'ufo' && p.roleId === 'ufo') || (role.id === 'nyomozo' && p.roleId === 'nyomozo'));
       const bondTransfers = role.id === 'orvos' || role.id === 'pek';
-      const partnerPreview = bondTransfers && p.id === selectedPartnerId ? roleActionEmoji(role.id) : '';
-      const preview = isSelected ? roleActionEmoji(role.id) : partnerPreview;
+      const roleEmojiHere = orvosTargetAbducted ? voidedMarker(roleActionEmoji(role.id)) : roleActionEmoji(role.id);
+      const partnerPreview = bondTransfers && p.id === selectedPartnerId ? roleEmojiHere : '';
+      const preview = isSelected ? roleEmojiHere : partnerPreview;
       const cls = isSelected ? 'selected' : '';
       const attrs = selectable ? `data-action="select-night-target" data-id="${p.id}"` : 'disabled';
       return `<button class="${cls}" ${attrs}>${nightTileLabel(state, p, preview, role.id, tentativeOpts)}</button>`;
@@ -1806,17 +1855,21 @@
       .map((id) => state.players.find((p) => p.id === id))
       .filter(Boolean);
 
-    // No role/outcome emoji in the morning banners - just plain names.
+    // Never the affected PLAYER's own role emoji (that would leak who they are) -
+    // but every banner below leads with the ACTING role's own emoji, labelling
+    // which mechanic the line is about, same as abductBanner/cupidoBanner/
+    // healBanner further down.
     const deathBanner = deaths.length === 0
-      ? `<div class="banner info">Az éjszaka mindenki túlélte.</div>`
+      ? `<div class="banner info">Mindenki túlélte az éjszakát.</div>`
       : `<div class="banner warn">Éjjel meghalt: <strong>${deaths.map((p) => escapeHtml(p.name)).join(', ')}</strong></div>`;
 
     // Most roles die anonymously (only the name is announced above) - a few (see
-    // roles.js's revealRoleOnDeath) get their own separate line naming the role.
+    // roles.js's revealRoleOnDeath) get their own separate line naming the role -
+    // that role's own emoji, since the point here is exactly to reveal it.
     const revealBanner = deaths
       .map((p) => Game.getRole(p.roleId))
       .filter((role) => role && role.revealRoleOnDeath)
-      .map((role) => `<div class="banner warn">Meghalt a ${escapeHtml(role.name)}!</div>`)
+      .map((role) => `<div class="banner warn">${roleEmoji(role)} Meghalt a ${escapeHtml(role.name)}!</div>`)
       .join('');
 
     const breadAction = state.nightActions['pek'];
@@ -1826,7 +1879,7 @@
       ? [breadAction.targetId, breadPartnerId].filter(Boolean).map((id) => state.players.find((p) => p.id === id)).filter(Boolean)
       : [];
     const breadBanner = breadRecipients.length
-      ? `<div class="banner info">Ma reggel kenyeret kapott: <strong>${breadRecipients.map((p) => escapeHtml(p.name)).join(', ')}</strong></div>`
+      ? `<div class="banner info">${roleActionEmoji('pek')} Ma reggel kenyeret kapott: <strong>${breadRecipients.map((p) => escapeHtml(p.name)).join(', ')}</strong></div>`
       : '';
 
     // Unifies both starvation triggers (see resolveNight() in game.js) into one
@@ -1838,14 +1891,54 @@
       ? state.round - state.pekDeathRound
       : state.pekConsecutiveAbductions;
     const starvationBanner = daysWithoutBread > 0
-      ? `<div class="banner warn">Kenyér nélkül eltelt napok: <strong>${daysWithoutBread}/3</strong> - utána éhínség lesz.</div>`
+      ? `<div class="banner warn">${roleActionEmoji('pek')} Kenyér nélkül eltelt napok: <strong>${daysWithoutBread}/3</strong></div>`
       : '';
 
     const maimBanner = state.pendingMaim
       .map((m) => ({ ...m, player: state.players.find((p) => p.id === m.targetId) }))
       .filter((m) => m.player && m.player.alive)
-      .map((m) => `<div class="banner warn"><strong>${escapeHtml(m.player.name)}</strong> ma ${m.bodyPart === 'kez' ? 'nem szavazhat' : 'nem beszélhet'}.</div>`)
+      .map((m) => `<div class="banner warn">${roleActionEmoji('csonkolo')} <strong>${escapeHtml(m.player.name)}</strong> ma ${m.bodyPart === 'kez' ? 'nem szavazhat' : 'nem beszélhet'}.</div>`)
       .join('');
+
+    // Every abducted id, direct UFO pick or a Cupido-bonded partner chain-dragged
+    // along (see recordLinkAction() in game.js) - both were "taken" as far as the
+    // group's concerned. Each of these three banners leads with the acting role's
+    // own emoji (not the affected player's - that's still never shown here, see
+    // the plain-names note above) just to label which mechanic the line is about.
+    const abductedPlayers = state.abductedIds.map((id) => state.players.find((p) => p.id === id)).filter(Boolean);
+    const abductBanner = abductedPlayers.length
+      ? `<div class="banner info">${roleActionEmoji('ufo')} Az UFO elrabolta: <strong>${abductedPlayers.map((p) => escapeHtml(p.name)).join(', ')}</strong></div>`
+      : '';
+
+    const linkAction = state.nightActions['cupido'];
+    const linkedPlayers = linkAction && linkAction.pairIds
+      ? linkAction.pairIds.map((id) => state.players.find((p) => p.id === id)).filter(Boolean)
+      : [];
+    const cupidoBanner = linkedPlayers.length === 2
+      ? `<div class="banner info">${roleActionEmoji('cupido')} A Cupido összekötötte: <strong>${linkedPlayers.map((p) => escapeHtml(p.name)).join(' és ')}</strong></div>`
+      : '';
+
+    // "Sikeres" csak akkor, ha (a) az UFO nem vitte el ugyanazt a célpontot (vagy
+    // annak Cupido-párját) - ugyanaz a feltétel, mint ami az éjszakai
+    // összefoglalóban elhalványítja az Orvos jelzését (lásd nightOutcomeByRole())
+    // - ÉS (b) tényleg történt ellene kísérlet: a gyilkosok vagy a Csonkoló őt
+    // (vagy a párját) célozták meg aznap éjjel. Enélkül a védés nem "mentett meg"
+    // senkit, nincs mit bejelenteni.
+    const healAction = state.nightActions['orvos'];
+    const healPartnerId = healAction ? linkedPartnerId(state, healAction.targetId) : null;
+    const healWasAbducted = !!healAction
+      && (state.abductedIds.includes(healAction.targetId) || (!!healPartnerId && state.abductedIds.includes(healPartnerId)));
+    const killAction = state.nightActions['gyilkos'];
+    const maimAction = state.nightActions['csonkolo'];
+    const healWasAttacked = !!healAction && (
+      (!!killAction && !!killAction.targetIds
+        && (killAction.targetIds.includes(healAction.targetId) || (!!healPartnerId && killAction.targetIds.includes(healPartnerId))))
+      || (!!maimAction && (maimAction.targetId === healAction.targetId || (!!healPartnerId && maimAction.targetId === healPartnerId)))
+    );
+    const healTarget = healAction ? state.players.find((p) => p.id === healAction.targetId) : null;
+    const healBanner = healAction && healTarget && !healWasAbducted && healWasAttacked
+      ? `<div class="banner info">${roleActionEmoji('orvos')} Sikeres gyógyítás történt.</div>`
+      : '';
 
     // Closed by default - the announcements above already cover the outcomes that
     // matter; this is just for whoever wants the full picture of who did what.
@@ -1886,18 +1979,29 @@
 
     if (state.dayVoteResolved) {
       // Nappal csak 1 embert lehet kiszavazni - a döntés (kiszavazás vagy senki
-      // sem) egyszer hozható meg naponta, utána a szavazás zárolva marad.
+      // sem) egyszer hozható meg naponta, utána a szavazás zárolva marad. Same
+      // dimmed-board-plus-popup pattern as everywhere else a turn just needs to
+      // pause the narrator on something (see wrapWithPopup()) instead of a plain
+      // banner line - the board stays visible (disabled) under the popup.
+      const lockedTargets = alive
+        .map((p) => `<button disabled><span class="tile-name-line">${playerLabel(p)}</span></button>`)
+        .join('');
       app.innerHTML = `
         <div class="card">
           ${deathBanner}
           ${revealBanner}
+          ${abductBanner}
+          ${cupidoBanner}
+          ${healBanner}
           ${breadBanner}
           ${starvationBanner}
           ${maimBanner}
           ${nightSummary}
-          <div class="banner info">A mai szavazás lezárult.</div>
+          <h2>Gyanúsítás</h2>
+          ${wrapWithPopup(`<div class="target-grid">${lockedTargets}</div>`, `<div class="reason-line">A mai szavazás lezárult.</div>`)}
         </div>
         <footer class="actions">
+          <button data-action="reopen-day-vote">Vissza</button>
           <button class="primary" data-action="next-round">Következő éjszaka</button>
         </footer>
       `;
@@ -1913,15 +2017,18 @@
       <div class="card">
         ${deathBanner}
         ${revealBanner}
+        ${abductBanner}
+        ${cupidoBanner}
+        ${healBanner}
         ${breadBanner}
         ${starvationBanner}
         ${maimBanner}
         ${nightSummary}
-        <h2>Kiszavazás</h2>
+        <h2>Gyanúsítás</h2>
         <div class="target-grid">${targets}</div>
         <footer class="actions">
           <button data-action="no-elimination">Senkit sem szavaznak ki</button>
-          <button class="primary" data-action="confirm-eliminate" ${daySelectedId ? '' : 'disabled'}>Kiszavazás megerősítése</button>
+          <button class="primary" data-action="confirm-eliminate" ${daySelectedId ? '' : 'disabled'}>Gyanúsítás megerősítése</button>
         </footer>
       </div>
       <footer class="actions">
@@ -1932,6 +2039,16 @@
 
   // ---- End screen ----
 
+  // Why the game ended - see game.js's deriveWinReason()/state.winReason.
+  function winReasonText(state) {
+    return {
+      gyilkosok_elfogytak: 'Minden gyilkos meghalt.',
+      gyilkosok_tobbsegben: 'A gyilkosok elérték vagy túllépték a többséget a túlélők között.',
+      starvation: 'A város kenyér nélkül maradt, és éhínség lett úrrá rajta.',
+      solo: 'Kiszavazásra került, és ezzel egyedül nyert.',
+    }[state.winReason] || '';
+  }
+
   function renderEnded(state) {
     let winnerText;
     if (state.winner === 'solo') {
@@ -1941,6 +2058,7 @@
     } else {
       winnerText = `<strong>${teamLabel(state.winner)}</strong> győztek!`;
     }
+    const reasonText = winReasonText(state);
     // Same base row layout as "Szerepek kiosztva" (role badge left, sorted by role).
     const rows = [...state.players]
       .sort((a, b) => roleSortIndex(a.roleId) - roleSortIndex(b.roleId))
@@ -1952,6 +2070,7 @@
     app.innerHTML = `
       <div class="card">
         <div class="banner win">${winnerText}</div>
+        ${reasonText ? `<div class="banner info">${reasonText}</div>` : ''}
         <h2>Végső szereposztás</h2>
         <ul class="player-list">${rows}</ul>
       </div>
@@ -2211,6 +2330,7 @@
         daySelectedId = null;
       }
       else if (action === 'no-elimination') { daySelectedId = null; Game.noElimination(); }
+      else if (action === 'reopen-day-vote') Game.reopenDayVote();
       else if (action === 'next-round') Game.nextRound();
       else if (action === 'reset-game') {
         if (confirm('Biztosan új játékot kezdesz? A jelenlegi állás elvész.')) Game.resetGame();

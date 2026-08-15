@@ -43,6 +43,9 @@ const Game = (() => {
       dayVoteResolved: false, // true once the day's one allowed elimination decision has
                                // been made (eliminatePlayer or noElimination) - blocks
                                // voting again until beginNight() resets it for next round
+      dayEliminatedId: null, // playerId eliminatePlayer() just killed this vote, or null if
+                              // noElimination() was picked instead - lets reopenDayVote()'s
+                              // "Vissza" revive them and reopen voting
       pendingHunterShot: null, // playerId of a just-eliminated Vadász, waiting for their shot target
       pendingMaim: [], // [{ targetId, bodyPart: 'kez' | 'nyelv' }] - Csonkoló's victim(s) for
                         // the upcoming day only (2 if Cupido's bond dragged in a partner).
@@ -50,6 +53,9 @@ const Game = (() => {
       pekDeathRound: null, // round the Pék died in, or null - starts the starvation countdown
       pekConsecutiveAbductions: 0, // nights in a row the UFO has taken the Pék
       winner: null, // null | 'polgarok' | 'gyilkosok' | 'solo'
+      winReason: null, // null | 'gyilkosok_elfogytak' | 'gyilkosok_tobbsegben' | 'starvation' | 'solo' -
+                        // why the game ended, for the ended screen's explanation line (see
+                        // deriveWinReason())
       soloWinnerId: null, // playerId, only set when winner === 'solo' (e.g. Gyári munkás)
       killsPerNight: 1, // how many targets the gyilkosok pick together each night - set at setup
       dayTimerMinutes: 7, // length of the day discussion timer - set at setup
@@ -317,6 +323,7 @@ const Game = (() => {
     state.abductedIds = [];
     state.pendingDeaths = [];
     state.dayVoteResolved = false;
+    state.dayEliminatedId = null;
     // Every role assigned to someone THIS GAME keeps its nightly turn for the rest of
     // the game, even after its holder(s) die - a real narrator still calls "Gyilkosok,
     // ébredjetek" every night regardless, so skipping the call wouldn't leak who died
@@ -567,6 +574,7 @@ const Game = (() => {
 
     if (starvation) {
       state.winner = 'gyilkosok';
+      state.winReason = 'starvation';
       state.phase = PHASES.ENDED;
       save();
       return;
@@ -575,6 +583,7 @@ const Game = (() => {
     const winner = checkWinCondition();
     if (winner) {
       state.winner = winner;
+      state.winReason = deriveWinReason(winner);
       state.phase = PHASES.ENDED;
     } else {
       state.phase = PHASES.DAY;
@@ -592,7 +601,12 @@ const Game = (() => {
       return { name: target.name, abducted: true };
     }
     const role = getRole(target.roleId);
-    return { name: target.name, team: role ? role.team : 'ismeretlen' };
+    // Gyári munkás is tracked as its own team elsewhere (the yellow badge, its
+    // spot at the end of the role order) so the narrator can tell it apart at a
+    // glance, but the Nyomozó's investigation still reads it as an ordinary
+    // Polgár - it has no kill/maim/etc. to give it away as anything else.
+    const team = role && role.id === 'gyarimunkas' ? 'polgarok' : (role ? role.team : 'ismeretlen');
+    return { name: target.name, team };
   }
 
   // ---- Day phase ----
@@ -602,11 +616,13 @@ const Game = (() => {
     if (!p || !p.alive) return;
     p.alive = false;
     state.dayVoteResolved = true;
+    state.dayEliminatedId = id;
     const role = getRole(p.roleId);
     applyDeathConsequences(p);
 
     if (role && role.soloWinIfVotedOut) {
       state.winner = 'solo';
+      state.winReason = 'solo';
       state.soloWinnerId = id;
       state.phase = PHASES.ENDED;
       save();
@@ -622,6 +638,7 @@ const Game = (() => {
     const winner = checkWinCondition();
     if (winner) {
       state.winner = winner;
+      state.winReason = deriveWinReason(winner);
       state.phase = PHASES.ENDED;
     }
     save();
@@ -639,6 +656,7 @@ const Game = (() => {
     const winner = checkWinCondition();
     if (winner) {
       state.winner = winner;
+      state.winReason = deriveWinReason(winner);
       state.phase = PHASES.ENDED;
     }
     save();
@@ -646,6 +664,29 @@ const Game = (() => {
 
   function noElimination() {
     state.dayVoteResolved = true;
+    save();
+  }
+
+  // Undoes eliminatePlayer()/noElimination() and reopens today's vote - the
+  // "Vissza" button on the locked-vote screen. Only reachable while still on the
+  // day screen (phase === DAY), so this never has to unwind a solo win or a
+  // Vadász's shot: both of those move the phase away from DAY (to ENDED, or to
+  // the pendingHunterShot screen) before the narrator could ever see this button.
+  function reopenDayVote() {
+    if (state.phase !== PHASES.DAY || !state.dayVoteResolved) return;
+    if (state.dayEliminatedId) {
+      const p = state.players.find((pl) => pl.id === state.dayEliminatedId);
+      if (p) {
+        p.alive = true;
+        const role = getRole(p.roleId);
+        // Only undo the starvation countdown if THIS vote is what started it.
+        if (role && role.id === 'pek' && state.pekDeathRound === state.round) {
+          state.pekDeathRound = null;
+        }
+      }
+      state.dayEliminatedId = null;
+    }
+    state.dayVoteResolved = false;
     save();
   }
 
@@ -664,6 +705,16 @@ const Game = (() => {
 
     if (gyilkosok.length === 0) return 'polgarok';
     if (gyilkosok.length >= masok.length) return 'gyilkosok';
+    return null;
+  }
+
+  // Which of checkWinCondition()'s two outcomes actually happened, for the ended
+  // screen's explanation line - starvation and a Gyári munkás's solo win set
+  // state.winReason directly at their own call sites instead, since neither goes
+  // through checkWinCondition().
+  function deriveWinReason(winner) {
+    if (winner === 'polgarok') return 'gyilkosok_elfogytak';
+    if (winner === 'gyilkosok') return 'gyilkosok_tobbsegben';
     return null;
   }
 
@@ -725,6 +776,7 @@ const Game = (() => {
     eliminatePlayer,
     resolveHunterShot,
     noElimination,
+    reopenDayVote,
     nextRound,
     resetGame,
   };
