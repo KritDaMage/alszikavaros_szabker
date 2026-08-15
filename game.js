@@ -31,18 +31,22 @@ const Game = (() => {
                           // (see PHASES.REVEAL) - shown right before round 1, not during it
       nightQueue: [], // roleIds in order, still waiting to act this night
       nightActions: {}, // roleId -> { targetId }
+      nightActionHistory: [], // snapshots taken before each recorded/skipped night
+                               // action, for the "Vissza" button - see stepBackNightAction()
       abductedIds: [], // playerIds untouchable this night - the UFO's target, plus anyone
                         // Cupido links to an already-abducted player (chain reaction).
                         // Can't be targeted, and their own night action (if any) is voided,
                         // for this night only.
       pendingDeaths: [], // result of the current night's resolution, until announced
+      dayVoteResolved: false, // true once the day's one allowed elimination decision has
+                               // been made (eliminatePlayer or noElimination) - blocks
+                               // voting again until beginNight() resets it for next round
       pendingHunterShot: null, // playerId of a just-eliminated Vadász, waiting for their shot target
       pendingMaim: [], // [{ targetId, bodyPart: 'kez' | 'nyelv' }] - Csonkoló's victim(s) for
                         // the upcoming day only (2 if Cupido's bond dragged in a partner).
                         // Overwritten fresh every resolveNight().
       pekDeathRound: null, // round the Pék died in, or null - starts the starvation countdown
       pekConsecutiveAbductions: 0, // nights in a row the UFO has taken the Pék
-      log: [], // { round, phase, text, time }
       winner: null, // null | 'polgarok' | 'gyilkosok' | 'solo'
       soloWinnerId: null, // playerId, only set when winner === 'solo' (e.g. Gyári munkás)
     };
@@ -73,15 +77,6 @@ const Game = (() => {
 
   function alivePlayers() {
     return state.players.filter((p) => p.alive);
-  }
-
-  function addLog(text) {
-    state.log.unshift({
-      round: state.round,
-      phase: state.phase,
-      text,
-      time: new Date().toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' }),
-    });
   }
 
   // ---- Home phase ----
@@ -146,7 +141,6 @@ const Game = (() => {
     state.assignmentTotalCounts = { ...roleCounts };
     state.assignmentHistory = [];
     state.phase = PHASES.ASSIGN;
-    addLog('Szerepek kiosztása elkezdődött (0. éjszaka).');
     save();
   }
 
@@ -175,7 +169,6 @@ const Game = (() => {
     uniqueIds.forEach((id) => {
       const p = state.players.find((pl) => pl.id === id);
       p.roleId = role.id;
-      addLog(`${p.name}: ${role.name} szerepet kapta.`);
     });
     state.assignmentHistory.push({ roleId: role.id, playerIds: uniqueIds });
     state.assignmentQueue.shift();
@@ -184,7 +177,6 @@ const Game = (() => {
       // Stay in ASSIGN (renderAssign shows a "Játék indítása" screen once the queue
       // is empty) instead of dropping back to the full SETUP screen.
       state.players.forEach((p) => { if (!p.roleId) p.roleId = fillerRoleId; });
-      addLog('Szerepek kiosztva.');
     }
     save();
   }
@@ -225,7 +217,6 @@ const Game = (() => {
     state.assignmentTotalCounts = { ...roleCounts };
     state.assignmentHistory = [];
     state.phase = PHASES.ASSIGN;
-    addLog(`Szerepek automatikusan kisorsolva ${state.players.length} játékos között.`);
     save();
   }
 
@@ -239,7 +230,6 @@ const Game = (() => {
       if (p) p.roleId = null;
     });
     state.assignmentQueue.unshift(last.roleId);
-    addLog(`Visszalépés: ${getRole(last.roleId).name} kiosztása visszavonva.`);
     save();
   }
 
@@ -253,7 +243,6 @@ const Game = (() => {
     const tmp = a.roleId;
     a.roleId = b.roleId;
     b.roleId = tmp;
-    addLog(`${a.name} és ${b.name} szerepet cseréltek.`);
     save();
   }
 
@@ -264,7 +253,6 @@ const Game = (() => {
     state.assignmentTotalCounts = {};
     state.assignmentHistory = [];
     state.phase = PHASES.SETUP;
-    addLog('Szerepek kiosztása megszakítva.');
     save();
   }
 
@@ -288,10 +276,8 @@ const Game = (() => {
     if (revealRoles.length > 0) {
       state.pendingReveals = revealRoles;
       state.phase = PHASES.REVEAL;
-      addLog('0. éjszaka: bemutatkozás.');
     } else {
       state.round = 1;
-      addLog('A játék elkezdődött.');
       beginNight();
     }
     save();
@@ -305,12 +291,10 @@ const Game = (() => {
   function acknowledgePreGameReveal() {
     const role = currentPreGameReveal();
     if (!role) return;
-    addLog(`${role.name}: megismerték egymást.`);
     state.pendingReveals.shift();
 
     if (state.pendingReveals.length === 0) {
       state.round = 1;
-      addLog('A játék elkezdődött.');
       beginNight();
     }
     save();
@@ -321,16 +305,22 @@ const Game = (() => {
   function beginNight() {
     state.phase = PHASES.NIGHT;
     state.nightActions = {};
+    state.nightActionHistory = [];
     state.abductedIds = [];
     state.pendingDeaths = [];
-    const rolesAlive = new Set(alivePlayers().map((p) => p.roleId));
+    state.dayVoteResolved = false;
+    // Every role assigned to someone THIS GAME keeps its nightly turn for the rest of
+    // the game, even after its holder(s) die - a real narrator still calls "Gyilkosok,
+    // ébredjetek" every night regardless, so skipping the call wouldn't leak who died
+    // via timing. index.html's renderNight shows a "mock" turn (no one selectable,
+    // just "Tovább") whenever nobody can currently act it out - see roleHasActor().
+    const rolesInGame = new Set(state.players.map((p) => p.roleId));
     // onceOnly roles never appear in a regular night's queue - they got their
     // moment pre-game, in PHASES.REVEAL (see startGame()).
     state.nightQueue = ROLES
-      .filter((r) => r.nightAction && rolesAlive.has(r.id) && !r.onceOnly)
+      .filter((r) => r.nightAction && rolesInGame.has(r.id) && !r.onceOnly)
       .sort((a, b) => a.nightOrder - b.nightOrder)
       .map((r) => r.id);
-    addLog(`${state.round}. éjszaka kezdődik.`);
     save();
   }
 
@@ -339,30 +329,37 @@ const Game = (() => {
     return getRole(state.nightQueue[0]);
   }
 
-  // Drops any still-pending role from the queue if every one of its living holders is
-  // now untouchable (abducted or chain-linked to an abductee) - they have no one left
-  // to act with tonight.
-  function purgeUnactionableRoles() {
-    state.nightQueue = state.nightQueue.filter((roleId) => {
-      const holders = alivePlayers().filter((p) => p.roleId === roleId);
-      const allUntouchable = holders.length > 0 && holders.every((p) => state.abductedIds.includes(p.id));
-      if (allUntouchable) {
-        addLog(`${getRole(roleId).name}: az elrablás miatt nem tud cselekedni ma éjjel.`);
-      }
-      return !allUntouchable;
-    });
+  // Snapshot taken right before a role's action is recorded or skipped, so
+  // stepBackNightAction() can restore everything that action touched (the queue,
+  // the recorded action, abductions) without having to manually reverse each role's
+  // specific logic.
+  function snapshotNightState(roleId) {
+    return {
+      roleId,
+      nightQueue: [...state.nightQueue],
+      nightActions: JSON.parse(JSON.stringify(state.nightActions)),
+      abductedIds: [...state.abductedIds],
+    };
+  }
+
+  function stepBackNightAction() {
+    if (state.phase !== PHASES.NIGHT || state.nightActionHistory.length === 0) return;
+    const last = state.nightActionHistory.pop();
+    state.nightQueue = last.nightQueue;
+    state.nightActions = last.nightActions;
+    state.abductedIds = last.abductedIds;
+    save();
   }
 
   function recordNightAction(targetId) {
     const role = currentNightRole();
     if (!role) return;
+    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { targetId };
-    addLog(`${role.name}: cél kiválasztva.`);
     state.nightQueue.shift();
 
     if (role.id === 'ufo') {
       state.abductedIds.push(targetId);
-      purgeUnactionableRoles();
     }
 
     save();
@@ -375,20 +372,15 @@ const Game = (() => {
     const role = currentNightRole();
     if (!role || role.nightAction !== 'link') return;
     if (!idA || !idB || idA === idB) return;
+    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { pairIds: [idA, idB] };
-    const a = state.players.find((p) => p.id === idA);
-    const b = state.players.find((p) => p.id === idB);
-    addLog(`${role.name}: ${a ? a.name : '?'} és ${b ? b.name : '?'} összekötve ma éjjelre.`);
     state.nightQueue.shift();
 
     if (state.abductedIds.includes(idA) && !state.abductedIds.includes(idB)) {
       state.abductedIds.push(idB);
-      addLog(`${b ? b.name : '?'} a kötés miatt szintén az UFO áldozata lett ma éjjel.`);
     } else if (state.abductedIds.includes(idB) && !state.abductedIds.includes(idA)) {
       state.abductedIds.push(idA);
-      addLog(`${a ? a.name : '?'} a kötés miatt szintén az UFO áldozata lett ma éjjel.`);
     }
-    purgeUnactionableRoles();
 
     save();
   }
@@ -400,9 +392,8 @@ const Game = (() => {
     const role = currentNightRole();
     if (!role || role.nightAction !== 'maim') return;
     if (!targetId || (bodyPart !== 'kez' && bodyPart !== 'nyelv')) return;
+    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { targetId, bodyPart };
-    const target = state.players.find((p) => p.id === targetId);
-    addLog(`${role.name}: ${target ? target.name : '?'} - ${bodyPart === 'kez' ? 'kéz' : 'nyelv'} megcsonkítva.`);
     state.nightQueue.shift();
     save();
   }
@@ -410,35 +401,34 @@ const Game = (() => {
   function skipNightAction() {
     const role = currentNightRole();
     if (!role) return;
-    addLog(`${role.name}: kihagyva.`);
+    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightQueue.shift();
     save();
   }
 
-  // The role of whoever is bonded to playerId via tonight's Cupido link, or null.
-  function bondPartnerRole(playerId, linkAction) {
+  // The playerId of whoever is bonded to playerId via tonight's Cupido link, or null.
+  function bondPartnerId(playerId, linkAction) {
     if (!linkAction || !linkAction.pairIds) return null;
     const [a, b] = linkAction.pairIds;
-    const partnerId = playerId === a ? b : playerId === b ? a : null;
+    return playerId === a ? b : playerId === b ? a : null;
+  }
+
+  // The role of whoever is bonded to playerId via tonight's Cupido link, or null.
+  function bondPartnerRole(playerId, linkAction) {
+    const partnerId = bondPartnerId(playerId, linkAction);
     if (!partnerId) return null;
     const partner = state.players.find((p) => p.id === partnerId);
     return partner ? getRole(partner.roleId) : null;
   }
 
   // Side effects triggered by a specific player's death, wherever it happens (night
-  // kill, day vote, a Vadász's shot). Returns a suffix to append to the death's log line.
+  // kill, day vote, a Vadász's shot).
   function applyDeathConsequences(player) {
-    if (!player) return '';
-    let suffix = '';
+    if (!player) return;
     const role = getRole(player.roleId);
-    if (role && role.announceRoleOnDeath) {
-      suffix += ` Bejelentés: ő volt a(z) ${role.name}!`;
-    }
     if (role && role.id === 'pek' && state.pekDeathRound === null) {
       state.pekDeathRound = state.round;
-      suffix += ' Nincs többé, aki kenyeret süssön - ha 3 éjszakán belül nem dől el a játék, éhen hal a város.';
     }
-    return suffix;
   }
 
   // Resolve the collected night actions: who died.
@@ -456,14 +446,13 @@ const Game = (() => {
       const partnerRole = bondPartnerRole(killAction.targetId, linkAction);
       const roleImmune = (targetRole && targetRole.immuneToKill) || (partnerRole && partnerRole.immuneToKill);
       const wasAbducted = state.abductedIds.includes(killAction.targetId);
-      const survivesProtection = killAction.targetId === protectedId;
+      // The Orvos's protection bond-transfers too - protecting one half of tonight's
+      // Cupido pair shields the other half from the kill as well.
+      const survivesProtection = protectedId !== null
+        && (killAction.targetId === protectedId || bondPartnerId(killAction.targetId, linkAction) === protectedId);
 
       if (!survivesProtection && !roleImmune && !wasAbducted) {
         deaths.push(killAction.targetId);
-      } else if (wasAbducted) {
-        addLog(`${targetPlayer ? targetPlayer.name : '?'}: a gyilkosok nem érték el, mert aznap éjjel az UFO elrabolta.`);
-      } else if (roleImmune) {
-        addLog(`${targetPlayer ? targetPlayer.name : '?'}: a gyilkosok megpróbálták megölni, de túlélte (Katona hatása).`);
       }
     }
 
@@ -478,18 +467,11 @@ const Game = (() => {
     state.pendingDeaths = deaths;
     deaths.forEach((id) => {
       const p = state.players.find((pl) => pl.id === id);
-      if (p) p.alive = false;
+      if (p) {
+        p.alive = false;
+        applyDeathConsequences(p);
+      }
     });
-
-    if (deaths.length === 0) {
-      addLog('Az éjszaka mindenki túlélte.');
-    } else {
-      deaths.forEach((id) => {
-        const p = state.players.find((pl) => pl.id === id);
-        const suffix = applyDeathConsequences(p);
-        addLog(`${p ? p.name : '?'} meghalt az éjszaka.${suffix}`);
-      });
-    }
 
     // Csonkoló: tomorrow's speech/vote restriction(s) - void if the target was
     // abducted or the Orvos protected them (same as death), but Cupido's bond still
@@ -499,25 +481,19 @@ const Game = (() => {
     const newPendingMaim = [];
 
     if (maimAction && maimAction.targetId) {
-      const target = state.players.find((p) => p.id === maimAction.targetId);
       const wasAbducted = state.abductedIds.includes(maimAction.targetId);
-      const wasProtected = protectAction && protectAction.targetId === maimAction.targetId;
+      // Same protection bond-transfer as the kill: protecting the target's Cupido
+      // partner shields the target from the maim too.
+      const wasProtected = !!protectAction
+        && (protectAction.targetId === maimAction.targetId || bondPartnerId(maimAction.targetId, linkAction) === protectAction.targetId);
 
-      if (wasAbducted) {
-        addLog(`${target ? target.name : '?'}: a Csonkoló nem érte el, mert aznap éjjel az UFO elrabolta.`);
-      } else if (wasProtected) {
-        addLog(`${target ? target.name : '?'}: az Orvos a csonkítástól is megvédte.`);
-      } else {
+      if (!wasAbducted && !wasProtected) {
         newPendingMaim.push({ targetId: maimAction.targetId, bodyPart: maimAction.bodyPart });
 
         if (linkAction && linkAction.pairIds) {
-          const [a, b] = linkAction.pairIds;
-          const partnerId = maimAction.targetId === a ? b : maimAction.targetId === b ? a : null;
+          const partnerId = bondPartnerId(maimAction.targetId, linkAction);
           if (partnerId) {
-            const partner = state.players.find((p) => p.id === partnerId);
             newPendingMaim.push({ targetId: partnerId, bodyPart: maimAction.bodyPart });
-            const partLabel = maimAction.bodyPart === 'kez' ? 'kéz' : 'nyelv';
-            addLog(`${partner ? partner.name : '?'}: a kötés miatt szintén megcsonkult (${partLabel}).`);
           }
         }
       }
@@ -541,7 +517,6 @@ const Game = (() => {
     if (starvation) {
       state.winner = 'gyilkosok';
       state.phase = PHASES.ENDED;
-      addLog('Éhen halt a város - nem maradt, aki kenyeret süssön. A gyilkosok győztek!');
       save();
       return;
     }
@@ -550,7 +525,6 @@ const Game = (() => {
     if (winner) {
       state.winner = winner;
       state.phase = PHASES.ENDED;
-      addLog(winner === 'polgarok' ? 'A polgárok győztek!' : 'A gyilkosok győztek!');
     } else {
       state.phase = PHASES.DAY;
     }
@@ -576,15 +550,14 @@ const Game = (() => {
     const p = state.players.find((pl) => pl.id === id);
     if (!p || !p.alive) return;
     p.alive = false;
+    state.dayVoteResolved = true;
     const role = getRole(p.roleId);
-    const suffix = applyDeathConsequences(p);
-    addLog(`${p.name}-t kiszavazták.${suffix}`);
+    applyDeathConsequences(p);
 
     if (role && role.soloWinIfVotedOut) {
       state.winner = 'solo';
       state.soloWinnerId = id;
       state.phase = PHASES.ENDED;
-      addLog(`${p.name} (${role.name}) egyedül győzött, mert kiszavazták!`);
       save();
       return;
     }
@@ -599,7 +572,6 @@ const Game = (() => {
     if (winner) {
       state.winner = winner;
       state.phase = PHASES.ENDED;
-      addLog(winner === 'polgarok' ? 'A polgárok győztek!' : 'A gyilkosok győztek!');
     }
     save();
   }
@@ -610,21 +582,19 @@ const Game = (() => {
     const target = state.players.find((p) => p.id === targetId);
     if (!target || !target.alive) return;
     target.alive = false;
-    const suffix = applyDeathConsequences(target);
-    addLog(`${shooter ? shooter.name : 'A vadász'} lelőtte ${target.name}-t.${suffix}`);
+    applyDeathConsequences(target);
     state.pendingHunterShot = null;
 
     const winner = checkWinCondition();
     if (winner) {
       state.winner = winner;
       state.phase = PHASES.ENDED;
-      addLog(winner === 'polgarok' ? 'A polgárok győztek!' : 'A gyilkosok győztek!');
     }
     save();
   }
 
   function noElimination() {
-    addLog('Nem szavaztak ki senkit.');
+    state.dayVoteResolved = true;
     save();
   }
 
@@ -692,6 +662,7 @@ const Game = (() => {
     recordLinkAction,
     recordMaimAction,
     skipNightAction,
+    stepBackNightAction,
     resolveNight,
     investigateResult,
     eliminatePlayer,

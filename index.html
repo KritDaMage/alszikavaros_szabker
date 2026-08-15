@@ -319,10 +319,80 @@
   }
 
   .target-grid button {
-    padding: 0.75rem 0.5rem;
+    padding: 0.9rem 0.5rem;
   }
 
   .target-grid button.selected {
+    border-color: var(--accent);
+    background: rgba(108,140,255,0.18);
+  }
+
+  .tile-name-line {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tile-emoji-line {
+    display: block;
+    /* Fixed height (not min-height) - emoji glyphs commonly render taller than
+       plain text at the same font-size, so a min-height-only box was still growing
+       (and dragging the whole grid row along with it) the moment one got added.
+       overflow:hidden clips the box to this exact size no matter what's inside.
+       Two lines' worth now, since several bond-transferred actions can stack up
+       on one tile at once. */
+    height: 2.9rem;
+    line-height: 1.35rem;
+    margin-top: 0.4rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--border);
+    text-align: left;
+    white-space: normal;
+    overflow: hidden;
+    word-break: break-word;
+  }
+
+  .target-grid-wrap {
+    position: relative;
+  }
+  .board-popup {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem;
+    background: rgba(10,10,16,0.72);
+    border-radius: 10px;
+  }
+  .board-popup-box {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1.1rem;
+    text-align: center;
+    max-width: 90%;
+  }
+  .board-popup-box .reason-line {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .board-popup-box .prompt {
+    text-align: center;
+  }
+  .popup-choice-row {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+    margin-top: 0.75rem;
+  }
+  .popup-choice-row button {
+    padding: 0.75rem 1rem;
+  }
+  .popup-choice-row button.selected {
     border-color: var(--accent);
     background: rgba(108,140,255,0.18);
   }
@@ -403,29 +473,6 @@
   .banner.info { background: rgba(108,140,255,0.12); border: 1px solid var(--accent); }
   .banner.warn { background: rgba(255,108,108,0.12); border: 1px solid var(--danger); }
   .banner.win { background: rgba(108,255,171,0.12); border: 1px solid var(--ok); }
-
-  details.log {
-    margin-top: 1rem;
-  }
-  details.log summary {
-    cursor: pointer;
-    color: var(--muted);
-    padding: 0.5rem 0;
-  }
-  .log-entries {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    max-height: 40vh;
-    overflow-y: auto;
-  }
-  .log-entry {
-    font-size: 0.85rem;
-    color: var(--muted);
-    border-left: 2px solid var(--border);
-    padding-left: 0.5rem;
-  }
-  .log-entry .time { color: var(--accent); margin-right: 0.4rem; }
 
   footer.actions {
     display: flex;
@@ -545,6 +592,10 @@
     return { polgarok: 'Polgárok', gyilkosok: 'Gyilkosok', semleges: 'Semleges' }[team] || team;
   }
 
+  function teamLabelSingular(team) {
+    return { polgarok: 'Polgár', gyilkosok: 'Gyilkos', semleges: 'Semleges' }[team] || team;
+  }
+
   function el(html) {
     const t = document.createElement('template');
     t.innerHTML = html.trim();
@@ -562,19 +613,6 @@
     statusLine.textContent = state.round > 0
       ? `${state.round}. kör - ${phaseLabel}`
       : phaseLabel;
-  }
-
-  function renderLog(state) {
-    if (state.log.length === 0) return '';
-    const entries = state.log
-      .map((e) => `<div class="log-entry"><span class="time">${e.time}</span>${escapeHtml(e.text)}</div>`)
-      .join('');
-    return `
-      <details class="log">
-        <summary>Esemény napló (${state.log.length})</summary>
-        <div class="log-entries">${entries}</div>
-      </details>
-    `;
   }
 
   function escapeHtml(s) {
@@ -595,6 +633,107 @@
   // the narrator sees everyone's role anyway, so showing it speeds up target picking.
   function playerLabel(p) {
     return `${roleEmoji(Game.getRole(p.roleId))}${escapeHtml(p.name)}`;
+  }
+
+  // The other half of tonight's Cupido pair for playerId, or null.
+  function linkedPartnerId(state, playerId) {
+    const link = state.nightActions.cupido;
+    if (!link || !link.pairIds) return null;
+    const [a, b] = link.pairIds;
+    if (a === playerId) return b;
+    if (b === playerId) return a;
+    return null;
+  }
+
+  // The acting role's own emoji (see roles.js) - reused as the "this happened"
+  // marker everywhere instead of a separate, hand-picked symbol per action. One
+  // consistent set of emoji (the roles') instead of two overlapping ones to keep
+  // matched up.
+  function roleActionEmoji(roleId) {
+    const role = Game.getRole(roleId);
+    return role && role.emoji ? role.emoji : '';
+  }
+
+  // Left-to-right order night-action markers appear in, matching nightOrder (UFO=1,
+  // Cupido=2, Pék=4, Orvos=5, Csonkoló=9, Gyilkos=10, Nyomozó=20) - so a live preview
+  // during selection always slots into the same spot it'll end up in once actually
+  // confirmed, instead of always landing at the end regardless of which role acts.
+  const OUTCOME_ROLE_ORDER = ['ufo', 'cupido', 'katona-shield', 'pek', 'orvos', 'csonkolo', 'gyilkos', 'nyomozo'];
+
+  // Everything already confirmed for playerId tonight, keyed by role (see
+  // OUTCOME_ROLE_ORDER) - the shared basis for both nightOutcomeEmoji() and the
+  // live-preview version in nightTileLabel(). A Cupido pair shares fate: whatever
+  // happens to one (kill, maim, protection, gift) shows on the other too, matching
+  // resolveNight()'s bond logic - only investigation doesn't bond-transfer, since
+  // it's pure information, not a lasting effect.
+  function nightOutcomeByRole(state, playerId) {
+    const na = state.nightActions;
+    const partnerId = linkedPartnerId(state, playerId);
+    const partnerPlayer = partnerId ? state.players.find((pl) => pl.id === partnerId) : null;
+    const partnerRole = partnerPlayer ? Game.getRole(partnerPlayer.roleId) : null;
+    return {
+      ufo: state.abductedIds.includes(playerId) ? roleActionEmoji('ufo') : '',
+      cupido: na.cupido && na.cupido.pairIds && na.cupido.pairIds.includes(playerId) ? roleActionEmoji('cupido') : '',
+      // Katona's immunity extends to whoever Cupido bonded them with tonight (see
+      // resolveNight()'s roleImmune check) - shown right after the bond marker, on
+      // the partner only (checking the PARTNER's role naturally excludes the Katona
+      // themselves here).
+      'katona-shield': partnerRole && partnerRole.immuneToKill ? roleActionEmoji('katona') : '',
+      pek: na.pek && (na.pek.targetId === playerId || na.pek.targetId === partnerId) ? roleActionEmoji('pek') : '',
+      orvos: na.orvos && (na.orvos.targetId === playerId || na.orvos.targetId === partnerId) ? roleActionEmoji('orvos') : '',
+      // Gyilkos's kill and the Csonkoló's maim show what actually happened, not the
+      // acting role's own emoji - a skull for a kill, specifically which body part
+      // for a maim (same for the bonded partner too, since it's the same bodyPart).
+      csonkolo: na.csonkolo && (na.csonkolo.targetId === playerId || na.csonkolo.targetId === partnerId)
+        ? (na.csonkolo.bodyPart === 'kez' ? '✋' : '👅') : '',
+      gyilkos: na.gyilkos && (na.gyilkos.targetId === playerId || na.gyilkos.targetId === partnerId) ? '💀' : '',
+      nyomozo: na.nyomozo && na.nyomozo.targetId === playerId ? roleActionEmoji('nyomozo') : '',
+    };
+  }
+
+  function nightOutcomeEmoji(state, playerId) {
+    const byRole = nightOutcomeByRole(state, playerId);
+    const parts = OUTCOME_ROLE_ORDER.map((r) => byRole[r]).filter(Boolean);
+    return parts.length ? ` ${parts.join(' ')}` : '';
+  }
+
+  // Whether anyone can actually perform this role's action tonight - false once every
+  // living holder is abducted (or the role's only holder(s) are dead). Drives the
+  // "mock" turn in renderNight(): the role still gets called every night (see
+  // beginNight() in game.js), but with nothing to click, just "Tovább".
+  function roleHasActor(state, role) {
+    return Game.alivePlayers().some((p) => p.roleId === role.id && !state.abductedIds.includes(p.id));
+  }
+
+  // previewEmoji: shown immediately while a candidate is merely selected/highlighted,
+  // before the action is even confirmed - same as a role's emoji already showing up
+  // next to a tapped-but-not-yet-confirmed candidate on the "Szerepek kiosztva" board.
+  function nightPlayerLabel(state, p, previewEmoji = '') {
+    const confirmed = nightOutcomeEmoji(state, p.id);
+    const preview = previewEmoji ? ` ${previewEmoji}` : '';
+    return `${playerLabel(p)}${confirmed}${preview}`;
+  }
+
+  // Same as nightPlayerLabel, but for grid tiles (target-grid/assignee-card buttons):
+  // puts the outcome/preview emoji on its own (two-line-capable) block, in a slot
+  // that's always reserved (see .tile-emoji-line), so every tile in the row stays
+  // the same size whether or not it actually has anything to show there. The name
+  // line is still clamped to one line (see the CSS) - a long name truncates instead
+  // of wrapping, so it alone can't grow a tile taller than its neighbours.
+  // previewRoleId, if given, slots previewEmoji into its correct spot in
+  // OUTCOME_ROLE_ORDER instead of just appending it - so during selection, the
+  // marker already sits exactly where it'll end up once actually confirmed. Left
+  // out (e.g. Cupido's own marker, which may already bundle an inherited UFO/Katona
+  // preview into one string), the preview is just appended - fine there since
+  // nothing later in the night could be confirmed yet at that point anyway.
+  function nightTileLabel(state, p, previewEmoji = '', previewRoleId = null) {
+    const byRole = nightOutcomeByRole(state, p.id);
+    if (previewEmoji && previewRoleId && previewRoleId in byRole) {
+      byRole[previewRoleId] = previewEmoji;
+    }
+    const parts = OUTCOME_ROLE_ORDER.map((r) => byRole[r]).filter(Boolean);
+    if (previewEmoji && !(previewRoleId && previewRoleId in byRole)) parts.push(previewEmoji);
+    return `<span class="tile-name-line">${playerLabel(p)}</span><span class="tile-emoji-line">${parts.join(' ')}</span>`;
   }
 
   // Role display order: nightOrder ascending (no-night-action roles after all the
@@ -654,6 +793,17 @@
       </li>
     `).join('');
 
+    // "Összes bekapcsolása" master toggle - flips every toggleable role (everything
+    // with its own on/off switch, i.e. maxCount:1 and not alwaysActive) at once.
+    const toggleableRoles = ROLES.filter((r) => r.maxCount === 1 && !r.alwaysActive);
+    const allRolesOn = toggleableRoles.length > 0 && toggleableRoles.every((r) => roleToggleDraft[r.id]);
+    const selectAllHtml = `
+      <div class="role-row">
+        <div><strong>Összes bekapcsolása</strong></div>
+        <button type="button" class="toggle-switch" data-action="toggle-all-roles" aria-pressed="${allRolesOn ? 'true' : 'false'}"></button>
+      </div>
+    `;
+
     const rolesHtml = ROLES.filter((r) => r.id !== 'polgar').map((r) => {
       let control;
       if (r.alwaysActive) {
@@ -699,6 +849,7 @@
       <div class="card">
         <h2>Szerepek beállítása</h2>
         <p class="muted">Add meg, hány darab legyen az egyes szerepekből. A maradék játékos automatikusan Polgár lesz.</p>
+        ${selectAllHtml}
         ${rolesHtml}
         <div id="role-capacity-warning"></div>
         <footer class="actions">
@@ -707,7 +858,6 @@
         </footer>
       </div>
 
-      ${renderLog(state)}
     `;
 
     document.getElementById('new-player-name').addEventListener('keydown', (e) => {
@@ -878,7 +1028,6 @@
             <button class="primary" data-action="start-game">Játék indítása</button>
           </footer>
         </div>
-        ${renderLog(state)}
       `;
       return;
     }
@@ -890,11 +1039,11 @@
 
     const board = state.players.map((p) => {
       if (p.roleId) {
-        return `<button class="assignee-card assigned" disabled>${playerLabel(p)}</button>`;
+        return `<button class="assignee-card assigned" disabled><span class="tile-name-line">${playerLabel(p)}</span></button>`;
       }
       const isSelected = assignSelectedIds.includes(p.id);
       const label = isSelected ? `${roleEmoji(role)}${escapeHtml(p.name)}` : escapeHtml(p.name);
-      return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-assignee" data-id="${p.id}">${label}</button>`;
+      return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-assignee" data-id="${p.id}"><span class="tile-name-line">${label}</span></button>`;
     }).join('');
 
     app.innerHTML = `
@@ -913,7 +1062,6 @@
           <button class="primary" data-action="confirm-assignment" ${assignSelectedIds.length === capacity ? '' : 'disabled'}>Következő</button>
         </footer>
       </div>
-      ${renderLog(state)}
     `;
   }
 
@@ -936,60 +1084,162 @@
           <button class="primary" data-action="ack-pregame-reveal">Kész, tovább</button>
         </footer>
       </div>
-      ${renderLog(state)}
     `;
   }
 
   // ---- Night screen ----
 
-  let investigateInfo = null; // { name, team } - investigate result shown until dismissed
+  let investigatePendingTargetId = null; // Nyomozó's target, confirmed, waiting for the result to be acknowledged
   let linkSelectedIds = []; // Cupido's picks this night - up to 2, toggled on/off
   let nightSelectedId = null; // single-target night action pick, until confirmed
   let maimPendingTargetId = null; // Csonkoló's target, confirmed, waiting for a body-part pick
+  let maimSelectedPart = null; // 'kez' | 'nyelv' picked in the popup, until confirmed
+
+  // Wraps a board (a target grid or a plain roster list) with a popup layered on top
+  // of it - same look everywhere a turn needs to pause the narrator on something
+  // (investigate's result, the Csonkoló's body-part pick, or a role nobody can act
+  // out) instead of swapping to a separate screen. The board underneath keeps its
+  // shape; the popup just covers it until dismissed/confirmed. dismissAction, if
+  // given, is put on the backdrop itself so tapping outside the box (or on its
+  // padding) triggers that action - the Csonkoló's body-part popup uses this so
+  // "clicking away" cancels back to target-picking instead of needing its own button;
+  // Nyomozó's result popup leaves this unset - it can only be advanced past via the
+  // board's own "Következő" button, not dismissed by tapping away.
+  function wrapWithPopup(contentHtml, popupHtml, dismissAction) {
+    if (!popupHtml) return contentHtml;
+    const dismissAttr = dismissAction ? ` data-action="${dismissAction}"` : '';
+    return `
+      <div class="target-grid-wrap">
+        ${contentHtml}
+        <div class="board-popup"${dismissAttr}><div class="board-popup-box">${popupHtml}</div></div>
+      </div>
+    `;
+  }
 
   function renderNight(state) {
     const role = Game.currentNightRole();
+    const canGoBackNight = state.nightActionHistory.length > 0;
     // Anyone abducted by the UFO can still be picked as a target by other roles too -
     // the action just won't have any effect on them (see game.js resolveNight/investigateResult).
-    let targetable = Game.alivePlayers();
-    if (role && role.id === 'ufo') {
-      targetable = targetable.filter((p) => p.roleId !== 'ufo');
+    // The UFO itself can't pick itself either, but stays visible on the board (disabled)
+    // instead of vanishing from the list - same for anyone else a role can't target.
+    const targetable = Game.alivePlayers();
+
+    // Nyomozó's result and the Csonkoló's body-part pick are both popups that sit on
+    // top of their OWN role's target board, not the next one - Game.recordNightAction()/
+    // recordMaimAction() only runs once the board's own "Következő" footer button is
+    // pressed a second time (see the generic and maim branches below), so the board
+    // underneath doesn't advance to the next role until then. Neither popup has a
+    // button of its own - the shared footer button confirms both. The Csonkoló's
+    // popup can also be cancelled by tapping away (back to target-picking); Nyomozó's
+    // result can't - it only advances via the footer button.
+    let popupHtml = '';
+    let investigatePopupActive = false;
+    let maimPopupActive = false;
+    let popupDismissAction;
+    if (investigatePendingTargetId) {
+      // No dismissAction - unlike the Csonkoló's popup, tapping away doesn't cancel
+      // this one, only the board's own "Következő" button does (see the generic
+      // branch below, where nextAction/nextEnabled switch to confirm-investigate).
+      investigatePopupActive = true;
+      const result = Game.investigateResult(investigatePendingTargetId);
+      const label = result && result.abducted ? 'Elrabolva' : teamLabelSingular(result ? result.team : '');
+      // Same .reason-line markup as the mock round's "meghalt/elrabolta" popup - not
+      // .prompt - so the two boxes end up pixel-identical instead of drifting apart.
+      popupHtml = `<div class="reason-line">${label}</div>`;
+    } else if (maimPendingTargetId) {
+      maimPopupActive = true;
+      popupDismissAction = 'cancel-maim-target';
+      popupHtml = `
+        <p class="prompt">Melyik testrészét csonkítod meg?</p>
+        <div class="popup-choice-row">
+          <button class="${maimSelectedPart === 'kez' ? 'selected' : ''}" data-action="select-maim-part" data-part="kez">✋ Kéz<br>(nem szavazhat)</button>
+          <button class="${maimSelectedPart === 'nyelv' ? 'selected' : ''}" data-action="select-maim-part" data-part="nyelv">👅 Nyelv<br>(nem beszélhet)</button>
+        </div>
+      `;
     }
 
-    if (investigateInfo) {
-      const investigateText = investigateInfo.abducted
-        ? `<strong>${escapeHtml(investigateInfo.name)}</strong>-t aznap éjjel elrabolta az UFO - nem sikerült megvizsgálni.`
-        : `<strong>${escapeHtml(investigateInfo.name)}</strong> csapata: <strong>${teamLabel(investigateInfo.team)}</strong>`;
+    if (!role) {
+      const rows = Game.alivePlayers().map((p) => `<li>${nightPlayerLabel(state, p)}</li>`).join('');
       app.innerHTML = `
         <div class="card">
-          <div class="banner info">${investigateText}</div>
+          <div class="banner info">Minden éjszakai szerep megvolt.</div>
+          ${wrapWithPopup(`<ul class="player-list">${rows}</ul>`, popupHtml, popupDismissAction)}
           <footer class="actions">
-            <button class="primary" data-action="ack-investigate">Tovább</button>
+            <button data-action="night-back" ${canGoBackNight ? '' : 'disabled'}>Vissza</button>
+            <button class="primary" data-action="resolve-night">Éjszaka lezárása</button>
           </footer>
         </div>
-        ${renderLog(state)}
       `;
       return;
     }
 
-    if (!role) {
+    if (!roleHasActor(state, role)) {
+      // Every holder of this role is dead or was abducted tonight - the turn still
+      // gets called (see beginNight()'s comment in game.js), but nothing can be picked.
+      // Keep showing the normal-looking full board underneath; the popup covers it,
+      // explaining why - either investigate's result if that's still pending, or this
+      // role's own reason as a fallback. Dead holders aren't part of Game.alivePlayers()
+      // any more, so they're spliced back in just for this board.
+      const holders = state.players.filter((p) => p.roleId === role.id);
+      const deadHolders = holders.filter((p) => !p.alive);
+      // Same two-part tile markup (name line + reserved emoji line) as every other
+      // night screen's target-grid, even though nothing goes in the emoji line here -
+      // otherwise these tiles come out shorter than the ones on other roles' turns,
+      // and the whole board visibly jumps in height when moving to/from this screen.
+      const board = [...Game.alivePlayers(), ...deadHolders]
+        .map((p) => `<button disabled><span class="tile-name-line">${playerLabel(p)}</span><span class="tile-emoji-line"></span></button>`)
+        .join('');
+      const reasonLines = holders.map((p) => {
+        const reason = !p.alive ? '💀 Meghalt' : `${roleActionEmoji('ufo')} Elrabolta az UFO`;
+        return `<div class="reason-line">${reason}</div>`;
+      }).join('');
       app.innerHTML = `
         <div class="card">
-          <div class="banner info">Minden éjszakai szerep megvolt.</div>
+          <div class="night-role-header">
+            ${roleEmoji(role, 'role-emoji-lg')}
+            <h2>${role.name}</h2>
+          </div>
+          <p class="prompt">${role.actionPrompt || ''}</p>
+          ${wrapWithPopup(`<div class="target-grid">${board}</div>`, popupHtml || reasonLines, popupHtml ? popupDismissAction : undefined)}
           <footer class="actions">
-            <button class="primary" data-action="resolve-night">Éjszaka lezárása</button>
+            <button data-action="night-back" ${canGoBackNight ? '' : 'disabled'}>Vissza</button>
+            <button class="primary" data-action="skip-night">Tovább</button>
           </footer>
         </div>
-        ${renderLog(state)}
       `;
       return;
     }
 
     if (role.nightAction === 'link') {
       const capacity = 2;
+      // If one of the two picks is already abducted (only the UFO, nightOrder 1,
+      // could have acted before Cupido, nightOrder 2), the bond drags the other one
+      // into the same abduction (see recordLinkAction() in game.js) - preview that
+      // on the not-yet-abducted partner as soon as both are picked, not just after
+      // "Összekötés" is actually pressed.
+      const abductedSelectedId = linkSelectedIds.find((id) => state.abductedIds.includes(id));
+      // Same idea for a Katona's immunity - if one of the two picks IS a Katona, the
+      // other one is now shielded too (see the partnerRole check in resolveNight()).
+      // Only the non-Katona partner gets the preview, not the Katona's own tile.
+      const katonaSelectedId = linkSelectedIds.find((id) => {
+        const pl = state.players.find((x) => x.id === id);
+        const r = pl ? Game.getRole(pl.roleId) : null;
+        return r && r.immuneToKill;
+      });
       const board = targetable.map((p) => {
         const isSelected = linkSelectedIds.includes(p.id);
-        return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-link-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+        let preview = '';
+        if (isSelected) {
+          preview = roleActionEmoji('cupido');
+          if (abductedSelectedId && abductedSelectedId !== p.id && !state.abductedIds.includes(p.id)) {
+            preview += ` ${roleActionEmoji('ufo')}`;
+          }
+          if (katonaSelectedId && katonaSelectedId !== p.id) {
+            preview += ` ${roleActionEmoji('katona')}`;
+          }
+        }
+        return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-link-target" data-id="${p.id}">${nightTileLabel(state, p, preview, 'cupido')}</button>`;
       }).join('');
 
       app.innerHTML = `
@@ -1000,66 +1250,71 @@
           </div>
           <p class="prompt">${role.actionPrompt || ''}</p>
           <p class="muted">Válassz ki két embert, akiket ma éjjelre összekötsz. (${linkSelectedIds.length}/2 kiválasztva)</p>
-          <div class="target-grid">${board}</div>
+          ${wrapWithPopup(`<div class="target-grid">${board}</div>`, popupHtml, popupDismissAction)}
           <footer class="actions">
+            <button data-action="night-back" ${canGoBackNight ? '' : 'disabled'}>Vissza</button>
             <button data-action="skip-night">Kihagyás</button>
             <button class="primary" data-action="confirm-link" ${linkSelectedIds.length === capacity ? '' : 'disabled'}>Összekötés</button>
           </footer>
         </div>
-        ${renderLog(state)}
       `;
       return;
     }
 
     if (role.nightAction === 'maim') {
-      if (!maimPendingTargetId) {
-        const targets = targetable.map((p) => {
-          const isSelected = p.id === nightSelectedId;
-          return `<button class="${isSelected ? 'selected' : ''}" data-action="select-night-target" data-id="${p.id}">${playerLabel(p)}</button>`;
-        }).join('');
-        app.innerHTML = `
-          <div class="card">
-            <div class="night-role-header">
-              ${roleEmoji(role, 'role-emoji-lg')}
-              <h2>${role.name}</h2>
-            </div>
-            <p class="prompt">${role.actionPrompt || ''}</p>
-            <div class="target-grid">${targets}</div>
-            <footer class="actions">
-              <button data-action="skip-night">Kihagyás</button>
-              <button class="primary" data-action="confirm-maim-target" ${nightSelectedId ? '' : 'disabled'}>Következő</button>
-            </footer>
-          </div>
-          ${renderLog(state)}
-        `;
-        return;
-      }
-
-      const maimTarget = state.players.find((p) => p.id === maimPendingTargetId);
+      // The body-part choice is a popup on top of this same board (built above into
+      // popupHtml when maimPendingTargetId is set) instead of a separate screen - the
+      // target-picking step just stays visible underneath while it's open. The same
+      // "Következő" footer button drives both steps: picks the target first, then
+      // (once the popup is open) confirms the selected body part.
+      const selectedPartnerId = nightSelectedId ? linkedPartnerId(state, nightSelectedId) : null;
+      const targets = targetable.map((p) => {
+        const isSelected = p.id === nightSelectedId;
+        const preview = (isSelected || p.id === selectedPartnerId) ? roleActionEmoji('csonkolo') : '';
+        return `<button class="${isSelected ? 'selected' : ''}" data-action="select-night-target" data-id="${p.id}">${nightTileLabel(state, p, preview, 'csonkolo')}</button>`;
+      }).join('');
+      const nextAction = maimPopupActive ? 'confirm-maim-part' : 'confirm-maim-target';
+      const nextEnabled = maimPopupActive ? !!maimSelectedPart : !!nightSelectedId;
       app.innerHTML = `
         <div class="card">
           <div class="night-role-header">
             ${roleEmoji(role, 'role-emoji-lg')}
             <h2>${role.name}</h2>
           </div>
-          <p class="prompt">Melyik testrészét csonkítod meg ${maimTarget ? escapeHtml(maimTarget.name) : '?'}-nak?</p>
-          <div class="target-grid">
-            <button data-action="confirm-maim-part" data-part="kez">✋ Kéz (nem szavazhat)</button>
-            <button data-action="confirm-maim-part" data-part="nyelv">👅 Nyelv (nem beszélhet)</button>
-          </div>
+          <p class="prompt">${role.actionPrompt || ''}</p>
+          ${wrapWithPopup(`<div class="target-grid">${targets}</div>`, popupHtml, popupDismissAction)}
           <footer class="actions">
-            <button data-action="cancel-maim-target">Vissza</button>
+            <button data-action="night-back" ${canGoBackNight ? '' : 'disabled'}>Vissza</button>
+            <button data-action="skip-night">Kihagyás</button>
+            <button class="primary" data-action="${nextAction}" ${nextEnabled ? '' : 'disabled'}>Következő</button>
           </footer>
         </div>
-        ${renderLog(state)}
       `;
       return;
     }
 
+    const selectedPartnerId = nightSelectedId ? linkedPartnerId(state, nightSelectedId) : null;
     const targets = targetable.map((p) => {
       const isSelected = p.id === nightSelectedId;
-      return `<button class="${isSelected ? 'selected' : ''}" data-action="select-night-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+      // The UFO can't abduct itself, and there's no point in the Nyomozó investigating
+      // themselves - both still shown on the board, just disabled.
+      const selectable = !((role.id === 'ufo' && p.roleId === 'ufo') || (role.id === 'nyomozo' && p.roleId === 'nyomozo'));
+      // Gyilkos, Orvos and Pék all bond-transfer to the partner (investigation
+      // doesn't). Gyilkos shows a skull rather than its own role emoji - what
+      // actually happens, not who did it.
+      const bondTransfers = role.id === 'gyilkos' || role.id === 'orvos' || role.id === 'pek';
+      const partnerPreview = bondTransfers && p.id === selectedPartnerId ? (role.id === 'gyilkos' ? '💀' : roleActionEmoji(role.id)) : '';
+      const preview = isSelected ? (role.id === 'gyilkos' ? '💀' : roleActionEmoji(role.id)) : partnerPreview;
+      const cls = isSelected ? 'selected' : '';
+      const attrs = selectable ? `data-action="select-night-target" data-id="${p.id}"` : 'disabled';
+      return `<button class="${cls}" ${attrs}>${nightTileLabel(state, p, preview, role.id)}</button>`;
     }).join('');
+
+    // The same "Következő" footer button drives both steps of Nyomozó's investigate,
+    // same as the Csonkoló's maim: picks the target first, then (once the result
+    // popup is open) acknowledges it and actually advances.
+    const nextAction = investigatePopupActive ? 'confirm-investigate' : 'confirm-night-target';
+    const nextEnabled = investigatePopupActive ? true : !!nightSelectedId;
 
     app.innerHTML = `
       <div class="card">
@@ -1068,13 +1323,13 @@
           <h2>${role.name}</h2>
         </div>
         <p class="prompt">${role.actionPrompt || ''}</p>
-        <div class="target-grid">${targets}</div>
+        ${wrapWithPopup(`<div class="target-grid">${targets}</div>`, popupHtml, popupDismissAction)}
         <footer class="actions">
+          <button data-action="night-back" ${canGoBackNight ? '' : 'disabled'}>Vissza</button>
           <button data-action="skip-night">Kihagyás</button>
-          <button class="primary" data-action="confirm-night-target" ${nightSelectedId ? '' : 'disabled'}>Következő</button>
+          <button class="primary" data-action="${nextAction}" ${nextEnabled ? '' : 'disabled'}>Következő</button>
         </footer>
       </div>
-      ${renderLog(state)}
     `;
   }
 
@@ -1090,12 +1345,16 @@
 
     const deathBanner = deaths.length === 0
       ? `<div class="banner info">Az éjszaka mindenki túlélte.</div>`
-      : `<div class="banner warn">Éjjel meghalt: <strong>${deaths.map((p) => playerLabel(p)).join(', ')}</strong></div>`;
+      : `<div class="banner warn">Éjjel meghalt: <strong>${deaths.map((p) => nightPlayerLabel(state, p)).join(', ')}</strong></div>`;
 
     const breadAction = state.nightActions['pek'];
-    const breadRecipient = breadAction ? state.players.find((p) => p.id === breadAction.targetId) : null;
-    const breadBanner = breadRecipient
-      ? `<div class="banner info">Ma reggel kenyeret kapott: <strong>${playerLabel(breadRecipient)}</strong></div>`
+    // Cupido's bond drags the partner in here too, same as the other night actions.
+    const breadPartnerId = breadAction ? linkedPartnerId(state, breadAction.targetId) : null;
+    const breadRecipients = breadAction
+      ? [breadAction.targetId, breadPartnerId].filter(Boolean).map((id) => state.players.find((p) => p.id === id)).filter(Boolean)
+      : [];
+    const breadBanner = breadRecipients.length
+      ? `<div class="banner info">Ma reggel kenyeret kapott: <strong>${breadRecipients.map((p) => playerLabel(p)).join(', ')}</strong></div>`
       : '';
 
     const maimBanner = state.pendingMaim
@@ -1108,7 +1367,7 @@
       const shooter = state.players.find((p) => p.id === state.pendingHunterShot);
       const shotTargets = alive.map((p) => {
         const isSelected = p.id === daySelectedId;
-        return `<button class="${isSelected ? 'selected' : ''}" data-action="select-day-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+        return `<button class="${isSelected ? 'selected' : ''}" data-action="select-day-target" data-id="${p.id}"><span class="tile-name-line">${playerLabel(p)}</span></button>`;
       }).join('');
       app.innerHTML = `
         <div class="card">
@@ -1118,14 +1377,30 @@
             <button class="primary" data-action="confirm-hunter-shot" ${daySelectedId ? '' : 'disabled'}>Következő</button>
           </footer>
         </div>
-        ${renderLog(state)}
+      `;
+      return;
+    }
+
+    if (state.dayVoteResolved) {
+      // Nappal csak 1 embert lehet kiszavazni - a döntés (kiszavazás vagy senki
+      // sem) egyszer hozható meg naponta, utána a szavazás zárolva marad.
+      app.innerHTML = `
+        <div class="card">
+          ${deathBanner}
+          ${breadBanner}
+          ${maimBanner}
+          <div class="banner info">A mai szavazás lezárult.</div>
+        </div>
+        <footer class="actions">
+          <button class="primary" data-action="next-round">Következő éjszaka</button>
+        </footer>
       `;
       return;
     }
 
     const targets = alive.map((p) => {
       const isSelected = p.id === daySelectedId;
-      return `<button class="${isSelected ? 'selected' : ''}" data-action="select-day-target" data-id="${p.id}">${playerLabel(p)}</button>`;
+      return `<button class="${isSelected ? 'selected' : ''}" data-action="select-day-target" data-id="${p.id}"><span class="tile-name-line">${playerLabel(p)}</span></button>`;
     }).join('');
 
     app.innerHTML = `
@@ -1143,7 +1418,6 @@
       <footer class="actions">
         <button class="primary" data-action="next-round">Következő éjszaka</button>
       </footer>
-      ${renderLog(state)}
     `;
   }
 
@@ -1172,7 +1446,6 @@
       <footer class="actions">
         <button class="primary" data-action="reset-game">Új játék</button>
       </footer>
-      ${renderLog(state)}
     `;
   }
 
@@ -1182,10 +1455,11 @@
 
   function render(state) {
     renderStatus(state);
-    investigateInfo = state.phase === Game.PHASES.NIGHT ? investigateInfo : null;
+    investigatePendingTargetId = state.phase === Game.PHASES.NIGHT ? investigatePendingTargetId : null;
     linkSelectedIds = state.phase === Game.PHASES.NIGHT ? linkSelectedIds : [];
     nightSelectedId = state.phase === Game.PHASES.NIGHT ? nightSelectedId : null;
     maimPendingTargetId = state.phase === Game.PHASES.NIGHT ? maimPendingTargetId : null;
+    maimSelectedPart = state.phase === Game.PHASES.NIGHT ? maimSelectedPart : null;
     assignSelectedIds = state.phase === Game.PHASES.ASSIGN ? assignSelectedIds : [];
     swapSelectedId = state.phase === Game.PHASES.ASSIGN ? swapSelectedId : null;
     daySelectedId = state.phase === Game.PHASES.DAY ? daySelectedId : null;
@@ -1228,7 +1502,7 @@
         }
       }
       else if (action === 'go-setup') {
-        roleDraft = { gyilkos: 0 };
+        roleDraft = { gyilkos: 1 };
         roleToggleDraft = {};
         Game.enterSetup();
       }
@@ -1238,6 +1512,18 @@
         const nowOn = btn.getAttribute('aria-pressed') !== 'true';
         btn.setAttribute('aria-pressed', nowOn ? 'true' : 'false');
         roleToggleDraft[btn.dataset.roleId] = nowOn;
+        updateRoleAvailability();
+      }
+      else if (action === 'toggle-all-roles') {
+        const toggleableRoles = ROLES.filter((r) => r.maxCount === 1 && !r.alwaysActive);
+        const allOn = toggleableRoles.length > 0 && toggleableRoles.every((r) => roleToggleDraft[r.id]);
+        const newState = !allOn;
+        toggleableRoles.forEach((r) => {
+          roleToggleDraft[r.id] = newState;
+          const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+          if (toggle) toggle.setAttribute('aria-pressed', newState ? 'true' : 'false');
+        });
+        btn.setAttribute('aria-pressed', newState ? 'true' : 'false');
         updateRoleAvailability();
       }
       else if (action === 'assign-roles') { swapSelectedId = null; Game.beginRoleAssignment(collectRoleCounts()); }
@@ -1287,25 +1573,55 @@
       else if (action === 'select-night-target') { nightSelectedId = btn.dataset.id; render(state); }
       else if (action === 'confirm-night-target') {
         const role = Game.currentNightRole();
-        if (role.nightAction === 'investigate') {
-          investigateInfo = Game.investigateResult(nightSelectedId);
-        }
-        Game.recordNightAction(nightSelectedId);
+        const targetId = nightSelectedId;
         nightSelectedId = null;
+        if (role.nightAction === 'investigate') {
+          // Don't record/advance yet - just hold the target and show the result
+          // popup on top of this same board; Game.recordNightAction() only runs once
+          // its own "Következő" is pressed (see 'confirm-investigate' below).
+          investigatePendingTargetId = targetId;
+          render(state);
+        } else {
+          Game.recordNightAction(targetId);
+        }
+      }
+      else if (action === 'confirm-investigate') {
+        const targetId = investigatePendingTargetId;
+        investigatePendingTargetId = null;
+        Game.recordNightAction(targetId);
       }
       else if (action === 'confirm-maim-target') {
         maimPendingTargetId = nightSelectedId;
         nightSelectedId = null;
         render(state);
       }
-      else if (action === 'cancel-maim-target') { maimPendingTargetId = null; render(state); }
+      else if (action === 'cancel-maim-target') { maimPendingTargetId = null; maimSelectedPart = null; render(state); }
+      else if (action === 'select-maim-part') { maimSelectedPart = btn.dataset.part; render(state); }
       else if (action === 'confirm-maim-part') {
         const targetId = maimPendingTargetId;
+        const part = maimSelectedPart;
         maimPendingTargetId = null;
-        Game.recordMaimAction(targetId, btn.dataset.part);
+        maimSelectedPart = null;
+        Game.recordMaimAction(targetId, part);
       }
-      else if (action === 'skip-night') { nightSelectedId = null; maimPendingTargetId = null; Game.skipNightAction(); }
-      else if (action === 'ack-investigate') { investigateInfo = null; render(state); }
+      else if (action === 'skip-night') {
+        nightSelectedId = null;
+        investigatePendingTargetId = null;
+        maimPendingTargetId = null;
+        maimSelectedPart = null;
+        linkSelectedIds = [];
+        Game.skipNightAction();
+      }
+      else if (action === 'night-back') {
+        // Clear all in-progress night-screen selections before stepping back - it
+        // re-renders synchronously via save(), so stale picks must already be gone.
+        nightSelectedId = null;
+        investigatePendingTargetId = null;
+        maimPendingTargetId = null;
+        maimSelectedPart = null;
+        linkSelectedIds = [];
+        Game.stepBackNightAction();
+      }
       else if (action === 'toggle-link-target') {
         const id = btn.dataset.id;
         const idx = linkSelectedIds.indexOf(id);
@@ -1318,8 +1634,11 @@
         render(state);
       }
       else if (action === 'confirm-link') {
-        Game.recordLinkAction(linkSelectedIds[0], linkSelectedIds[1]);
+        const ids = linkSelectedIds;
+        // Same ordering fix as confirm-night-target - clear before the synchronous
+        // re-render inside recordLinkAction(), not after.
         linkSelectedIds = [];
+        Game.recordLinkAction(ids[0], ids[1]);
       }
       else if (action === 'ack-pregame-reveal') Game.acknowledgePreGameReveal();
       else if (action === 'resolve-night') Game.resolveNight();

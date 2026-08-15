@@ -57,9 +57,6 @@
 //   shootsOnElimination - true if being voted out during the day lets this player
 //                   take one more living player down with them before the round
 //                   resolves (see Vadász).
-//   announceRoleOnDeath - true if this role's name is specifically called out in the
-//                   log whenever they die, day or night (see Sarki fűszeres) - unlike
-//                   other roles, whose deaths are logged without naming their role.
 
 const ROLES = [
   {
@@ -102,7 +99,7 @@ const ROLES = [
     nightAction: 'protect',
     nightOrder: 5,
     actionPrompt: 'Orvos, ébredj fel és mutasd meg, kit védesz meg ma éjjel!',
-    emoji: '💊',
+    emoji: '🩹',
     alwaysActive: true,
   },
   {
@@ -194,13 +191,12 @@ const ROLES = [
     id: 'fuszeres',
     name: 'Sarki fűszeres',
     team: 'polgarok',
-    description: 'Nincs feladata. Ha meghal - akár nappal, akár éjjel -, a narrátor kifejezetten bejelenti, hogy a Sarki fűszeres halt meg (a többi szerepnél a halál nem árulja el, ki volt az illető).',
+    description: 'Nincs feladata. Csak egy hétköznapi lakos a boltjával.',
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
     emoji: '🍃',
     maxCount: 1,
-    announceRoleOnDeath: true,
   },
   {
     id: 'pek',
