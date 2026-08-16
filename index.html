@@ -22,25 +22,6 @@
     font-size: 16px;
   }
 
-  /* Light mode, toggled via the header's sun/moon button (see #theme-toggle) -
-     dark stays the default (plain :root) so old saved preferences with no
-     data-theme attribute yet still land on the original look. */
-  html[data-theme="light"] {
-    --bg: #f2f3f8;
-    --panel: #ffffff;
-    --panel-2: #eceef6;
-    --border: #d6dae6;
-    --text: #1c1e29;
-    --muted: #656b82;
-    --accent: #3b5bdb;
-    --accent-2: #7048e8;
-    --danger: #d6336c;
-    --ok: #2f9e44;
-    --polgar: #3b5bdb;
-    --gyilkos: #d6336c;
-    --semleges: #e8a33d;
-  }
-
   * { box-sizing: border-box; }
 
   body {
@@ -68,34 +49,6 @@
   header h1 {
     font-size: 1.1rem;
     margin: 0;
-  }
-
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-
-  .theme-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3rem 0.55rem;
-    border-radius: 999px;
-    background: var(--panel-2);
-  }
-
-  .theme-toggle .theme-emoji {
-    font-size: 1rem;
-    line-height: 1;
-    opacity: 0.35;
-    transform: scale(0.9);
-    transition: opacity 0.2s ease, transform 0.2s ease;
-  }
-
-  .theme-toggle .theme-emoji.active {
-    opacity: 1;
-    transform: scale(1.1);
   }
 
   .header-title-button {
@@ -139,6 +92,11 @@
 
   main {
     padding: 1rem 1.25rem;
+  }
+
+  .roles-info-trigger {
+    text-align: center;
+    padding: 0 1.25rem 1.5rem;
   }
 
   @keyframes screen-slide-up {
@@ -315,6 +273,24 @@
     display: flex;
     align-items: center;
     gap: 0.6rem;
+    /* Scaled-up version of .roles-info-row's badge+name row (combined with that
+       class on the same element in renderNight) - same look as "Szerepek
+       leírása", just sized to read as a screen header instead of a compact list
+       row. */
+    font-size: 1.3rem;
+  }
+  .night-role-header .badge {
+    padding: 0.4rem 0.8rem;
+  }
+  .night-role-header .role-emoji {
+    font-size: 1.6rem;
+  }
+  /* This badge wraps only the emoji (the role name sits outside it, in its own
+     <strong>) - .role-emoji's margin-right (for when text follows in the same
+     badge elsewhere) has nothing to balance here, which pushes the emoji
+     off-center inside the pill. Same fix as .role-row's badge (setup screen). */
+  .roles-info-row .badge .role-emoji {
+    margin-right: 0;
   }
   .card-header-row {
     display: flex;
@@ -390,8 +366,64 @@
     margin-top: 0.75rem;
   }
 
+  /* Tonight's role order, top of every night screen - see nightProgressHtml(). */
+  .night-progress {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.9rem;
+  }
+  .night-progress-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+    border-radius: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 1.05rem;
+    opacity: 0.35;
+  }
+  /* CSS-drawn chevron instead of a text character - a glyph's height/baseline
+     never quite lines up with the step boxes next to it, so this is sized and
+     centered against the same 2rem height as .night-progress-step instead. */
+  .night-progress-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 0.6rem;
+    height: 2rem;
+    flex-shrink: 0;
+  }
+  .night-progress-arrow::before {
+    content: '';
+    width: 0.5rem;
+    height: 0.5rem;
+    border-right: 2px solid var(--muted);
+    border-top: 2px solid var(--muted);
+    transform: rotate(45deg);
+  }
+  .night-progress-step.done {
+    opacity: 0.75;
+  }
+  .night-progress-step.current {
+    opacity: 1;
+    border-color: var(--accent);
+    background: rgba(108,140,255,0.2);
+    transform: scale(1.15);
+  }
+
   .target-grid button {
     padding: 0.9rem 0.5rem;
+    /* <button> clips overflowing content by default in some browsers even
+       without an explicit overflow:hidden anywhere - without this, a tall emoji
+       glyph in .tile-emoji-line (overflow:visible there, see that rule) still
+       got its top sliced off by the button itself. */
+    overflow: visible;
   }
 
   .target-grid button.selected {
@@ -734,26 +766,12 @@
     margin-bottom: 0.3rem;
   }
 </style>
-<script>
-  // Applied before <body> paints, straight from localStorage, so the page never
-  // flashes dark-then-light on reload once someone's picked light mode.
-  if (localStorage.getItem('alszik-a-varos-theme') === 'light') {
-    document.documentElement.setAttribute('data-theme', 'light');
-  }
-</script>
 </head>
 <body>
 
 <header>
-  <div class="header-left">
-    <h1><button type="button" class="header-title-button" data-action="go-home"><span class="header-town-emoji">🏘️</span> Alszik a város</button></h1>
-    <button type="button" class="theme-toggle" id="theme-toggle" data-action="toggle-theme" aria-label="Nappali/éjszakai megjelenés váltása">
-      <span class="theme-emoji sun">☀️</span>
-      <span class="theme-emoji moon">🌙</span>
-    </button>
-  </div>
+  <h1><button type="button" class="header-title-button" data-action="go-home"><span class="header-town-emoji">🏘️</span> Alszik a város</button></h1>
   <div class="header-right">
-    <button class="small" data-action="toggle-roles-modal">Szerepek leírása</button>
     <div class="status" id="status-line">Betöltés...</div>
   </div>
 </header>
@@ -761,6 +779,9 @@
 <div class="app-column">
   <div id="sky-widget-root"></div>
   <main id="app"></main>
+  <div class="roles-info-trigger">
+    <button class="small" data-action="toggle-roles-modal">Szerepek leírása</button>
+  </div>
 </div>
 <div id="modal-root"></div>
 
@@ -772,27 +793,6 @@
   const statusLine = document.getElementById('status-line');
   const modalRoot = document.getElementById('modal-root');
   const skyWidgetRoot = document.getElementById('sky-widget-root');
-  const themeToggleBtn = document.getElementById('theme-toggle');
-
-  // Light/dark app theme (not the in-game day/night sky widget) - lives in its own
-  // localStorage key rather than Game's state since it's a device preference, not
-  // game data (resetGame()/a new game shouldn't touch it).
-  const THEME_KEY = 'alszik-a-varos-theme';
-
-  function currentTheme() {
-    return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark';
-  }
-
-  function applyTheme(theme) {
-    if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
-    else document.documentElement.removeAttribute('data-theme');
-    if (themeToggleBtn) {
-      themeToggleBtn.querySelector('.theme-emoji.sun').classList.toggle('active', theme === 'light');
-      themeToggleBtn.querySelector('.theme-emoji.moon').classList.toggle('active', theme !== 'light');
-    }
-  }
-
-  applyTheme(currentTheme());
 
   let rolesModalOpen = false;
 
@@ -890,8 +890,8 @@
     return role && role.emoji ? role.emoji : '';
   }
 
-  // Left-to-right order night-action markers appear in, matching the new nightOrder
-  // (Gyilkos=1, UFO=2, Cupido=3, Orvos=4, Nyomozó=5, Csonkoló=6, Pék=7) - so a live
+  // Left-to-right order night-action markers appear in, matching the nightOrder
+  // (Gyilkos=1, UFO=2, Cupido=3, Csonkoló=4, Orvos=5, Nyomozó=6, Pék=7) - so a live
   // preview during selection always slots into the same spot it'll end up in once
   // actually confirmed, instead of always landing at the end regardless of which
   // role acts.
@@ -1041,6 +1041,26 @@
   // beginNight() in game.js), but with nothing to click, just "Tovább".
   function roleHasActor(state, role) {
     return Game.alivePlayers().some((p) => p.roleId === role.id && !state.abductedIds.includes(p.id));
+  }
+
+  // Step row at the top of every night screen showing tonight's full role order
+  // (already-called roles from state.nightActionHistory, then the still-waiting
+  // state.nightQueue - see beginNight() in game.js) so the narrator can see where
+  // they are and what's still coming, not just the current role's own screen.
+  function nightProgressHtml(state) {
+    const doneIds = state.nightActionHistory.map((h) => h.roleId);
+    const steps = [
+      ...doneIds.map((id) => ({ id, status: 'done' })),
+      ...state.nightQueue.map((id, i) => ({ id, status: i === 0 ? 'current' : 'upcoming' })),
+    ];
+    if (steps.length === 0) return '';
+    const stepsHtml = steps.map((s, i) => {
+      const role = Game.getRole(s.id);
+      const stepHtml = `<span class="night-progress-step ${s.status}" title="${escapeHtml(role ? role.name : '')}">${roleActionEmoji(s.id)}</span>`;
+      const arrowHtml = i < steps.length - 1 ? '<span class="night-progress-arrow"></span>' : '';
+      return stepHtml + arrowHtml;
+    }).join('');
+    return `<div class="night-progress">${stepsHtml}</div>`;
   }
 
   // previewEmoji: shown immediately while a candidate is merely selected/highlighted,
@@ -1668,9 +1688,10 @@
       }).join('');
       app.innerHTML = `
         <div class="card">
-          <div class="night-role-header">
-            ${roleEmoji(role, 'role-emoji-lg')}
-            <h2>${role.name}</h2>
+          ${nightProgressHtml(state)}
+          <div class="roles-info-row night-role-header">
+            <span class="badge ${role.team}">${roleEmoji(role)}</span>
+            <strong>${role.name}</strong>
           </div>
           <p class="prompt">${role.actionPrompt || ''}</p>
           ${wrapWithPopup(`<div class="target-grid">${board}</div>`, popupHtml || reasonLines, popupHtml ? popupDismissAction : undefined)}
@@ -1701,9 +1722,10 @@
 
       app.innerHTML = `
         <div class="card">
-          <div class="night-role-header">
-            ${roleEmoji(role, 'role-emoji-lg')}
-            <h2>${role.name}</h2>
+          ${nightProgressHtml(state)}
+          <div class="roles-info-row night-role-header">
+            <span class="badge ${role.team}">${roleEmoji(role)}</span>
+            <strong>${role.name}</strong>
           </div>
           <p class="prompt">${role.actionPrompt || ''}</p>
           <p class="muted">Válassz ki két embert, akiket ma éjjelre összekötsz. (${linkSelectedIds.length}/2 kiválasztva)</p>
@@ -1736,9 +1758,10 @@
 
       app.innerHTML = `
         <div class="card">
-          <div class="night-role-header">
-            ${roleEmoji(role, 'role-emoji-lg')}
-            <h2>${role.name}</h2>
+          ${nightProgressHtml(state)}
+          <div class="roles-info-row night-role-header">
+            <span class="badge ${role.team}">${roleEmoji(role)}</span>
+            <strong>${role.name}</strong>
           </div>
           <p class="prompt">${role.actionPrompt || ''}</p>
           <p class="muted">Válassz ki ${capacity} embert, akiket ma éjjel megöltök. (${killSelectedIds.length}/${capacity} kiválasztva)</p>
@@ -1774,9 +1797,10 @@
       const nextEnabled = maimPopupActive ? !!maimSelectedPart : !!nightSelectedId;
       app.innerHTML = `
         <div class="card">
-          <div class="night-role-header">
-            ${roleEmoji(role, 'role-emoji-lg')}
-            <h2>${role.name}</h2>
+          ${nightProgressHtml(state)}
+          <div class="roles-info-row night-role-header">
+            <span class="badge ${role.team}">${roleEmoji(role)}</span>
+            <strong>${role.name}</strong>
           </div>
           <p class="prompt">${role.actionPrompt || ''}</p>
           ${wrapWithPopup(`<div class="target-grid">${targets}</div>`, popupHtml, popupDismissAction)}
@@ -1830,9 +1854,10 @@
 
     app.innerHTML = `
       <div class="card">
-        <div class="night-role-header">
-          ${roleEmoji(role, 'role-emoji-lg')}
-          <h2>${role.name}</h2>
+        ${nightProgressHtml(state)}
+        <div class="roles-info-row night-role-header">
+          <span class="badge ${role.team}">${roleEmoji(role)}</span>
+          <strong>${role.name}</strong>
         </div>
         <p class="prompt">${role.actionPrompt || ''}</p>
         ${wrapWithPopup(`<div class="target-grid">${targets}</div>`, popupHtml, popupDismissAction)}
@@ -2132,11 +2157,6 @@
     try {
       if (action === 'toggle-roles-modal') { rolesModalOpen = true; renderModal(); }
       else if (action === 'close-roles-modal') { rolesModalOpen = false; renderModal(); }
-      else if (action === 'toggle-theme') {
-        const next = currentTheme() === 'light' ? 'dark' : 'light';
-        localStorage.setItem(THEME_KEY, next);
-        applyTheme(next);
-      }
       else if (action === 'start-day-timer') { startDayTimer(); renderSkyWidget(state); }
       else if (action === 'go-home') {
         if (state.phase === Game.PHASES.HOME) return;
