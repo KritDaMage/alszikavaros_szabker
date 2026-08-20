@@ -31,14 +31,24 @@ const Game = (() => {
                                    // the "Szerepek kiosztva" roster only allows tap-to-swap when
                                    // this is false, since manual assignment already has its own
                                    // "Vissza" undo and roles get announced as they're handed out.
-      nightQueue: [], // roleIds in order, still waiting to act this night
-      nightActions: {}, // roleId -> { targetId }
-      nightActionHistory: [], // snapshots taken before each recorded/skipped night
-                               // action, for the "Vissza" button - see stepBackNightAction()
-      abductedIds: [], // playerIds untouchable this night - the UFO's target, plus anyone
-                        // Cupido links to an already-abducted player (chain reaction).
-                        // Can't be targeted, and their own night action (if any) is voided,
-                        // for this night only.
+      nightRoleOrder: [], // fixed roleId order for the whole night (see beginNight()) -
+                           // doesn't shrink as roles get decided, so a role's spot in it
+                           // never changes no matter how much the narrator jumps around
+      nightCursor: 0, // index into nightRoleOrder - which role's screen is showing right
+                       // now. Purely a "where are we looking" pointer: stepping back,
+                       // jumping to any step (jumpToNightStep), confirming, or skipping
+                       // only ever move this - none of them touch nightActions for any
+                       // role other than the one currently at this position, so revisiting
+                       // an earlier step can never lose a later one's pick.
+      nightActions: {}, // roleId -> { targetId } (or the shape each role's recordXAction
+                         // uses) - a flat, order-independent record of every role's pick
+                         // this night, present only for roles that have actually been
+                         // decided (confirmed or skipped past) so far.
+      abductedIds: [], // playerIds untouchable this night - always freshly recomputed from
+                        // nightActions (see recomputeAbductedIds()), never hand-mutated -
+                        // the UFO's target, plus anyone Cupido links to an already-abducted
+                        // player (chain reaction). Can't be targeted, and their own night
+                        // action (if any) is voided, for this night only.
       pendingDeaths: [], // result of the current night's resolution, until announced
       dayVoteResolved: false, // true once the day's one allowed elimination decision has
                                // been made (eliminatePlayer or noElimination) - blocks
@@ -319,7 +329,6 @@ const Game = (() => {
   function beginNight() {
     state.phase = PHASES.NIGHT;
     state.nightActions = {};
-    state.nightActionHistory = [];
     state.abductedIds = [];
     state.pendingDeaths = [];
     state.dayVoteResolved = false;
@@ -330,67 +339,84 @@ const Game = (() => {
     // via timing. index.html's renderNight shows a "mock" turn (no one selectable,
     // just "Tovább") whenever nobody can currently act it out - see roleHasActor().
     const rolesInGame = new Set(state.players.map((p) => p.roleId));
-    state.nightQueue = ROLES
+    state.nightRoleOrder = ROLES
       .filter((r) => r.nightAction && rolesInGame.has(r.id))
       .sort((a, b) => a.nightOrder - b.nightOrder)
       .map((r) => r.id);
-    // In practice this never starts empty (Orvos/Nyomozó are always in rolesInGame),
+    state.nightCursor = 0;
+    // In practice this never starts empty (Orvos/Rendőr are always in rolesInGame),
     // but resolve immediately if it ever did rather than getting stuck with nothing
     // to render.
-    finishNightStep();
-  }
-
-  function currentNightRole() {
-    if (state.phase !== PHASES.NIGHT || state.nightQueue.length === 0) return null;
-    return getRole(state.nightQueue[0]);
-  }
-
-  // Snapshot taken right before a role's action is recorded or skipped, so
-  // stepBackNightAction() can restore everything that action touched (the queue,
-  // the recorded action, abductions) without having to manually reverse each role's
-  // specific logic.
-  function snapshotNightState(roleId) {
-    return {
-      roleId,
-      nightQueue: [...state.nightQueue],
-      nightActions: JSON.parse(JSON.stringify(state.nightActions)),
-      abductedIds: [...state.abductedIds],
-    };
-  }
-
-  function stepBackNightAction() {
-    if (state.phase !== PHASES.NIGHT || state.nightActionHistory.length === 0) return;
-    const last = state.nightActionHistory.pop();
-    state.nightQueue = last.nightQueue;
-    state.nightActions = last.nightActions;
-    state.abductedIds = last.abductedIds;
-    save();
-  }
-
-  // Called after every action/skip once the queue has already been shifted - once
-  // nothing's left, the night resolves itself immediately instead of waiting for a
-  // separate "Éjszaka lezárása" confirmation screen. resolveNight() does its own
-  // save(), so this is used in place of a trailing save() call, not alongside one.
-  function finishNightStep() {
-    if (state.nightQueue.length === 0) {
+    if (state.nightRoleOrder.length === 0) {
       resolveNight();
     } else {
       save();
     }
   }
 
+  function currentNightRole() {
+    if (state.phase !== PHASES.NIGHT || state.nightCursor >= state.nightRoleOrder.length) return null;
+    return getRole(state.nightRoleOrder[state.nightCursor]);
+  }
+
+  // abductedIds is always derived fresh from nightActions, never hand-mutated -
+  // whoever picked what is the only source of truth, so revisiting and changing an
+  // earlier role's pick (Cupido's bond, the UFO's target) automatically keeps this
+  // correct without needing separate undo bookkeeping for it.
+  function computeAbductedIds() {
+    const ids = [];
+    const ufoAction = state.nightActions['ufo'];
+    if (ufoAction && ufoAction.targetId) ids.push(ufoAction.targetId);
+    const linkAction = state.nightActions['cupido'];
+    if (linkAction && linkAction.pairIds) {
+      const [a, b] = linkAction.pairIds;
+      if (ids.includes(a) && !ids.includes(b)) ids.push(b);
+      else if (ids.includes(b) && !ids.includes(a)) ids.push(a);
+    }
+    return ids;
+  }
+
+  // Moves to the next role in tonight's fixed order (state.nightRoleOrder) -
+  // resolves the night once it runs past the last one, instead of waiting for a
+  // separate "Éjszaka lezárása" confirmation screen. Never touches nightActions
+  // itself - that's entirely up to whichever record*Action()/skipNightAction()
+  // call is advancing past its own role.
+  function advanceNightCursor() {
+    state.nightCursor += 1;
+    if (state.nightCursor >= state.nightRoleOrder.length) {
+      resolveNight();
+    } else {
+      save();
+    }
+  }
+
+  // Just moves the "which screen is showing" pointer back one - nightActions is
+  // untouched, so whatever was picked for the role landed on is still there,
+  // exactly as recordXAction() left it (see currentNightRole()/renderNight()).
+  function stepBackNightAction() {
+    if (state.phase !== PHASES.NIGHT || state.nightCursor <= 0) return;
+    state.nightCursor -= 1;
+    save();
+  }
+
+  // Jumps the pointer straight to any role in tonight's order, forward or back -
+  // the narrator tapping a step in the progress row (see nightProgressHtml() in
+  // index.html). Same as stepBackNightAction(): only moves where we're looking,
+  // never touches a single nightActions entry.
+  function jumpToNightStep(roleId) {
+    if (state.phase !== PHASES.NIGHT) return;
+    const index = state.nightRoleOrder.indexOf(roleId);
+    if (index === -1) return;
+    state.nightCursor = index;
+    save();
+  }
+
   function recordNightAction(targetId) {
     const role = currentNightRole();
     if (!role) return;
-    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { targetId };
-    state.nightQueue.shift();
-
-    if (role.id === 'ufo') {
-      state.abductedIds.push(targetId);
-    }
-
-    finishNightStep();
+    state.abductedIds = computeAbductedIds();
+    advanceNightCursor();
   }
 
   // Gyilkos picks state.killsPerNight targets at once (1 by default, configurable at
@@ -402,10 +428,9 @@ const Game = (() => {
     const capacity = killCapacity();
     const uniqueIds = [...new Set(targetIds)].filter(Boolean);
     if (uniqueIds.length !== capacity) return;
-    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { targetIds: uniqueIds };
-    state.nightQueue.shift();
-    finishNightStep();
+    state.abductedIds = computeAbductedIds();
+    advanceNightCursor();
   }
 
   // Cupido-style actions pick two players instead of one, so they get their own recorder.
@@ -415,17 +440,9 @@ const Game = (() => {
     const role = currentNightRole();
     if (!role || role.nightAction !== 'link') return;
     if (!idA || !idB || idA === idB) return;
-    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { pairIds: [idA, idB] };
-    state.nightQueue.shift();
-
-    if (state.abductedIds.includes(idA) && !state.abductedIds.includes(idB)) {
-      state.abductedIds.push(idB);
-    } else if (state.abductedIds.includes(idB) && !state.abductedIds.includes(idA)) {
-      state.abductedIds.push(idA);
-    }
-
-    finishNightStep();
+    state.abductedIds = computeAbductedIds();
+    advanceNightCursor();
   }
 
   // Csonkoló's action picks a target AND a body part - the actual restriction
@@ -435,18 +452,20 @@ const Game = (() => {
     const role = currentNightRole();
     if (!role || role.nightAction !== 'maim') return;
     if (!targetId || (bodyPart !== 'kez' && bodyPart !== 'nyelv')) return;
-    state.nightActionHistory.push(snapshotNightState(role.id));
     state.nightActions[role.id] = { targetId, bodyPart };
-    state.nightQueue.shift();
-    finishNightStep();
+    state.abductedIds = computeAbductedIds();
+    advanceNightCursor();
   }
 
+  // No action for this role tonight - explicitly removes any earlier pick too (e.g.
+  // the narrator revisited a role and decided against what they'd picked before),
+  // not just a no-op skip.
   function skipNightAction() {
     const role = currentNightRole();
     if (!role) return;
-    state.nightActionHistory.push(snapshotNightState(role.id));
-    state.nightQueue.shift();
-    finishNightStep();
+    delete state.nightActions[role.id];
+    state.abductedIds = computeAbductedIds();
+    advanceNightCursor();
   }
 
   // The playerId of whoever is bonded to playerId via tonight's Cupido link, or null.
@@ -603,7 +622,7 @@ const Game = (() => {
     const role = getRole(target.roleId);
     // Gyári munkás is tracked as its own team elsewhere (the yellow badge, its
     // spot at the end of the role order) so the narrator can tell it apart at a
-    // glance, but the Nyomozó's investigation still reads it as an ordinary
+    // glance, but the Rendőr's investigation still reads it as an ordinary
     // Polgár - it has no kill/maim/etc. to give it away as anything else.
     const team = role && role.id === 'gyarimunkas' ? 'polgarok' : (role ? role.team : 'ismeretlen');
     return { name: target.name, team };
@@ -702,8 +721,14 @@ const Game = (() => {
     const alive = alivePlayers();
     const gyilkosok = alive.filter((p) => getRole(p.roleId)?.team === 'gyilkosok');
     const masok = alive.filter((p) => getRole(p.roleId)?.team !== 'gyilkosok');
+    // Csonkoló is on the gyilkosok team too, but has no kill of his own - once
+    // every actual Gyilkos is dead, nobody left can kill at night, so the town
+    // is safe and polgárok win even if Csonkoló is still alive. He still counts
+    // toward the gyilkosok team for the parity win below, though - that's about
+    // the group's numbers, not who can literally still kill.
+    const activeKillers = alive.filter((p) => p.roleId === 'gyilkos');
 
-    if (gyilkosok.length === 0) return 'polgarok';
+    if (activeKillers.length === 0) return 'polgarok';
     if (gyilkosok.length >= masok.length) return 'gyilkosok';
     return null;
   }
@@ -771,6 +796,7 @@ const Game = (() => {
     recordMaimAction,
     skipNightAction,
     stepBackNightAction,
+    jumpToNightStep,
     resolveNight,
     investigateResult,
     eliminatePlayer,

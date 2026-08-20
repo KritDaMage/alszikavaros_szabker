@@ -27,7 +27,7 @@
 //                   (red warning + blocks "Szerepek kiosztása") and Game.assignRoles()
 //                   enforces it again as a safety net.
 //   alwaysActive  - true for roles that are simply always in the game (1 of them),
-//                   with no toggle at all in the setup screen - see Nyomozó/Orvos.
+//                   with no toggle at all in the setup screen - see Rendőr/Orvos.
 //                   Mutually exclusive with maxCount/linkedCountRoleId.
 //   linkedCountRoleId - set to another role's id to make the setup screen show this
 //                   role's headcount as a read-only number that always mirrors that
@@ -72,12 +72,12 @@ const ROLES = [
   },
   {
     id: 'nyomozo',
-    name: 'Nyomozó',
+    name: 'Rendőr',
     team: 'polgarok',
     description: 'Éjjel megvizsgálhat egy játékost, hogy megtudja, gyilkos-e.',
     nightAction: 'investigate',
     nightOrder: 6,
-    actionPrompt: 'Nyomozó, ébredj fel és mutass valakit, akit megvizsgálsz!',
+    actionPrompt: 'Rendőr, ébredj fel és mutass valakit, akit megvizsgálsz!',
     emoji: '🔍',
     alwaysActive: true,
   },

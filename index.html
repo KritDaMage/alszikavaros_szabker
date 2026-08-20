@@ -220,6 +220,12 @@
     border-color: var(--accent);
     background: rgba(108,140,255,0.18);
   }
+  /* Same role as the currently active first pick - not offered as a second pick
+     at all (see select-swap), since swapping two same-role players is a no-op. */
+  .player-list li.swap-row-blocked {
+    opacity: 0.4;
+    cursor: default;
+  }
 
   .badge {
     display: inline-flex;
@@ -234,6 +240,15 @@
   .badge.polgarok { background: rgba(108,140,255,0.15); color: var(--polgar); }
   .badge.gyilkosok { background: rgba(255,108,108,0.15); color: var(--gyilkos); }
   .badge.semleges { background: rgba(255,207,108,0.15); color: var(--semleges); }
+
+  /* Where the badge wraps only the emoji and the role name sits next to it in its
+     own <strong> (Szerepek leírása, the setup screen's role list, the night
+     header) instead of both being inside one badge together (Szerepek kiosztva,
+     the night summary, the ended screen) - the name reads much fainter there
+     otherwise, since it's plain --text instead of the team color. */
+  .badge.polgarok + strong { color: var(--polgar); }
+  .badge.gyilkosok + strong { color: var(--gyilkos); }
+  .badge.semleges + strong { color: var(--semleges); }
 
   .role-emoji {
     display: inline-flex;
@@ -298,6 +313,16 @@
     align-items: flex-start;
     gap: 0.5rem;
     margin-bottom: 0.75rem;
+  }
+  .role-count-badge {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .role-count-badge.over {
+    color: var(--danger);
   }
   .role-emoji-lg {
     font-size: 1.8rem;
@@ -381,12 +406,21 @@
     justify-content: center;
     width: 2rem;
     height: 2rem;
+    padding: 0;
     flex-shrink: 0;
     border-radius: 8px;
     background: var(--panel-2);
     border: 1px solid var(--border);
     font-size: 1.05rem;
     opacity: 0.35;
+    cursor: pointer;
+  }
+  .night-progress-step:hover {
+    opacity: 0.6;
+    border-color: var(--accent);
+  }
+  .night-progress-step.current:hover {
+    opacity: 1;
   }
   /* CSS-drawn chevron instead of a text character - a glyph's height/baseline
      never quite lines up with the step boxes next to it, so this is sized and
@@ -881,6 +915,29 @@
     return null;
   }
 
+  // Same idea, but honors an in-progress tentative edit on Cupido's own screen
+  // (opts.tentativePairIds, once both picks are made) instead of only ever
+  // reading the confirmed bond. Once given, the tentative pair fully REPLACES
+  // the confirmed one for EVERY player - including returning null for someone
+  // who was confirmed-bonded before this edit but isn't in the new pair, not
+  // just adding the new pair on top of the old one. Without this, re-editing an
+  // already-confirmed bond left every OTHER tile (not one of the two currently
+  // tapped) still reading the stale confirmed pair via linkedPartnerId() above,
+  // so a dropped partner kept showing as chain-drag-abducted and a newly added
+  // one didn't inherit anything through this path (nightOutcomeByRole()'s own
+  // direct abductedIds check still caught the newly added one, just not this
+  // bond-transfer one - see katona-shield/orvos/pek below).
+  function tentativePartnerIdFor(state, playerId, opts) {
+    if (opts.tentativePartnerId !== undefined) return opts.tentativePartnerId;
+    if (opts.tentativePairIds) {
+      const [a, b] = opts.tentativePairIds;
+      if (a === playerId) return b;
+      if (b === playerId) return a;
+      return null;
+    }
+    return linkedPartnerId(state, playerId);
+  }
+
   // The acting role's own emoji (see roles.js) - reused as the "this happened"
   // marker everywhere instead of a separate, hand-picked symbol per action. One
   // consistent set of emoji (the roles') instead of two overlapping ones to keep
@@ -891,7 +948,7 @@
   }
 
   // Left-to-right order night-action markers appear in, matching the nightOrder
-  // (Gyilkos=1, UFO=2, Cupido=3, Csonkoló=4, Orvos=5, Nyomozó=6, Pék=7) - so a live
+  // (Gyilkos=1, UFO=2, Cupido=3, Csonkoló=4, Orvos=5, Rendőr=6, Pék=7) - so a live
   // preview during selection always slots into the same spot it'll end up in once
   // actually confirmed, instead of always landing at the end regardless of which
   // role acts.
@@ -904,6 +961,32 @@
     return `<span class="outcome-voided">${emoji}</span>`;
   }
 
+  // Mirrors game.js's own computeAbductedIds(), but lets the UFO's or Cupido's
+  // own screen preview what state.abductedIds WOULD become from its current
+  // tentative (not yet confirmed) pick, instead of the still-stale confirmed
+  // value actually sitting in state.abductedIds until "Következő" is pressed.
+  // Every other screen calls this with no matching opt, so it just falls back
+  // to na.ufo/na.cupido and reproduces state.abductedIds exactly.
+  //
+  //   tentativeAbductedId - UFO's own screen, before "Következő": REPLACES (not
+  //     adds to) na.ufo's confirmed pick with whoever's currently tapped.
+  //   tentativePairIds - Cupido's own screen, once both picks are made, before
+  //     "Következő": REPLACES na.cupido's confirmed pair for the chain-drag check.
+  function tentativeAbductedIds(state, opts) {
+    opts = opts || {};
+    const na = state.nightActions;
+    const ids = [];
+    const ufoTargetId = opts.tentativeAbductedId !== undefined ? opts.tentativeAbductedId : (na.ufo ? na.ufo.targetId : null);
+    if (ufoTargetId) ids.push(ufoTargetId);
+    const pairIds = opts.tentativePairIds !== undefined ? opts.tentativePairIds : (na.cupido ? na.cupido.pairIds : null);
+    if (pairIds) {
+      const [a, b] = pairIds;
+      if (ids.includes(a) && !ids.includes(b)) ids.push(b);
+      else if (ids.includes(b) && !ids.includes(a)) ids.push(a);
+    }
+    return ids;
+  }
+
   // Whether tonight's Gyilkos kill on playerId is already known to not land -
   // mirrors resolveNight()'s per-target checks (game.js), but runs against
   // whatever's recorded SO FAR, so it's already accurate mid-night. Gyilkos wakes
@@ -914,18 +997,19 @@
   // opts lets the role CURRENTLY deciding the thing that would void this kill
   // preview it BEFORE confirming, not just after (mirrors resolveNight()'s own
   // checks one step early):
-  //   tentativePartnerId - Cupido's own screen, before "Összekötés": the other
+  //   tentativePartnerId - Cupido's own screen, before "Következő": the other
   //     currently-tapped pick, since linkedPartnerId() only sees a confirmed bond.
-  //   tentativeAbductedId - the UFO's own screen, before "Következő": whoever's
-  //     currently tapped, since state.abductedIds only gets it once confirmed.
+  //   tentativeAbductedId / tentativePairIds - forwarded straight to
+  //     tentativeAbductedIds() above, see there.
   //   tentativeProtectedId - Orvos's own screen, before "Következő": same idea.
   function killIsVoided(state, playerId, opts) {
     opts = opts || {};
     const na = state.nightActions;
     if (!na.gyilkos || !na.gyilkos.targetIds || !na.gyilkos.targetIds.includes(playerId)) return false;
+    const abductedIds = tentativeAbductedIds(state, opts);
     const livingGyilkosok = state.players.filter((p) => p.alive && p.roleId === 'gyilkos');
-    if (livingGyilkosok.length > 0 && livingGyilkosok.every((p) => state.abductedIds.includes(p.id))) return true;
-    const isAbducted = (id) => state.abductedIds.includes(id) || id === opts.tentativeAbductedId;
+    if (livingGyilkosok.length > 0 && livingGyilkosok.every((p) => abductedIds.includes(p.id))) return true;
+    const isAbducted = (id) => abductedIds.includes(id);
     if (isAbducted(playerId)) return true;
     const partnerId = opts.tentativePartnerId !== undefined ? opts.tentativePartnerId : linkedPartnerId(state, playerId);
     // Bonding to someone already (or about to be) abducted drags this player into
@@ -944,9 +1028,13 @@
 
   // Same idea for the Csonkoló's maim - voided if the (original, pre-bond-drag)
   // target was abducted or protected, mirroring resolveNight()'s maimAction check.
-  // Both the UFO and Orvos always act before Csonkoló (see ROLE_ORDER in
-  // roles.js), so unlike killIsVoided() this never needs a *tentative* abduction/
-  // protection - both are already confirmed fact by the time this runs.
+  // opts.tentativeAbductedId/tentativePairIds (forwarded to tentativeAbductedIds()
+  // above) cover the UFO/Cupido screens the same way killIsVoided()'s do - both
+  // can still be revisited and changed after Csonkoló already acted, now that the
+  // night's order-independent (see game.js's nightActions). opts.tentativeProtectedId
+  // covers Orvos's own screen the same way: the currently-tapped (not yet
+  // confirmed) candidate so an already-maimed target's marker previews as voided
+  // the moment it's tapped, not just after "Következő".
   //
   // opts.tentativeTargetId: Csonkoló's own screen, before "Következő": the
   // currently-tapped candidate, since na.csonkolo doesn't exist yet at that
@@ -957,10 +1045,11 @@
     const na = state.nightActions;
     const targetId = opts.tentativeTargetId !== undefined ? opts.tentativeTargetId : (na.csonkolo ? na.csonkolo.targetId : null);
     if (!targetId) return false;
-    if (targetId !== playerId && linkedPartnerId(state, playerId) !== targetId) return false;
-    if (state.abductedIds.includes(targetId)) return true;
-    const protectAction = na.orvos;
-    if (protectAction && (targetId === protectAction.targetId || linkedPartnerId(state, targetId) === protectAction.targetId)) return true;
+    if (targetId !== playerId && tentativePartnerIdFor(state, playerId, opts) !== targetId) return false;
+    const abductedIds = tentativeAbductedIds(state, opts);
+    if (abductedIds.includes(targetId)) return true;
+    const protectedId = opts.tentativeProtectedId !== undefined ? opts.tentativeProtectedId : (na.orvos ? na.orvos.targetId : null);
+    if (protectedId !== null && protectedId !== undefined && (targetId === protectedId || tentativePartnerIdFor(state, targetId, opts) === protectedId)) return true;
     return false;
   }
 
@@ -979,7 +1068,7 @@
   function nightOutcomeByRole(state, playerId, opts) {
     opts = opts || {};
     const na = state.nightActions;
-    const partnerId = opts.tentativePartnerId !== undefined ? opts.tentativePartnerId : linkedPartnerId(state, playerId);
+    const partnerId = tentativePartnerIdFor(state, playerId, opts);
     const partnerPlayer = partnerId ? state.players.find((pl) => pl.id === partnerId) : null;
     const partnerRole = partnerPlayer ? Game.getRole(partnerPlayer.roleId) : null;
     // Whatever's shown ON this tile only matters if this player is actually
@@ -987,7 +1076,11 @@
     // Katona-bond shield or an Orvos heal moot, the same way it voids a kill/maim
     // (see killIsVoided()). A bonded pair shares abduction too (chain-drag) -
     // checking the (possibly tentative) partner here previews that as well.
-    const isAbducted = (id) => state.abductedIds.includes(id) || id === opts.tentativeAbductedId;
+    // tentativeAbductedIds() (not the raw state.abductedIds) so a UFO/Cupido pick
+    // that's mid-edit on its own screen is reflected here too, not just once
+    // confirmed - see that function for why.
+    const abductedIds = tentativeAbductedIds(state, opts);
+    const isAbducted = (id) => abductedIds.includes(id);
     const abducted = isAbducted(playerId) || (!!partnerId && isAbducted(partnerId));
 
     const gyilkosHit = !!(na.gyilkos && na.gyilkos.targetIds
@@ -996,14 +1089,20 @@
     const gyilkosVoided = gyilkosHit && killIsVoided(state, gyilkosTargetId, {
       tentativePartnerId: gyilkosTargetId === playerId ? partnerId : playerId,
       tentativeAbductedId: opts.tentativeAbductedId,
+      tentativePairIds: opts.tentativePairIds,
       tentativeProtectedId: opts.tentativeProtectedId,
     });
 
     const csonkoloHit = !!(na.csonkolo && (na.csonkolo.targetId === playerId || na.csonkolo.targetId === partnerId));
-    const csonkoloVoided = csonkoloHit && maimIsVoided(state, playerId);
+    const csonkoloVoided = csonkoloHit && maimIsVoided(state, playerId, {
+      tentativeAbductedId: opts.tentativeAbductedId,
+      tentativePairIds: opts.tentativePairIds,
+      tentativeProtectedId: opts.tentativeProtectedId,
+    });
 
     const katonaShieldHit = !!(partnerRole && partnerRole.immuneToKill);
     const orvosHit = !!(na.orvos && (na.orvos.targetId === playerId || na.orvos.targetId === partnerId));
+    const pekHit = !!(na.pek && (na.pek.targetId === playerId || na.pek.targetId === partnerId));
 
     return {
       ufo: abducted ? roleActionEmoji('ufo') : '',
@@ -1013,7 +1112,11 @@
       // the partner only (checking the PARTNER's role naturally excludes the Katona
       // themselves here).
       'katona-shield': katonaShieldHit ? (abducted ? voidedMarker(roleActionEmoji('katona')) : roleActionEmoji('katona')) : '',
-      pek: na.pek && (na.pek.targetId === playerId || na.pek.targetId === partnerId) ? roleActionEmoji('pek') : '',
+      // The UFO puts the recipient (or their bonded partner) out of reach the same
+      // as any other role's effect (see roles.js's UFO description) - dims the same
+      // way as a voided kill/maim/protection instead of pretending the bread still
+      // got there.
+      pek: pekHit ? (abducted ? voidedMarker(roleActionEmoji('pek')) : roleActionEmoji('pek')) : '',
       orvos: orvosHit ? (abducted ? voidedMarker(roleActionEmoji('orvos')) : roleActionEmoji('orvos')) : '',
       // Gyilkos's kill and the Csonkoló's maim show what actually happened, not the
       // acting role's own emoji - a skull for a kill, specifically which body part
@@ -1043,21 +1146,21 @@
     return Game.alivePlayers().some((p) => p.roleId === role.id && !state.abductedIds.includes(p.id));
   }
 
-  // Step row at the top of every night screen showing tonight's full role order
-  // (already-called roles from state.nightActionHistory, then the still-waiting
-  // state.nightQueue - see beginNight() in game.js) so the narrator can see where
-  // they are and what's still coming, not just the current role's own screen.
+  // Step row at the top of every night screen showing tonight's full, fixed role
+  // order (state.nightRoleOrder - see beginNight() in game.js) so the narrator
+  // can see where they are (state.nightCursor) and what's still coming, not just
+  // the current role's own screen. Each step is clickable (jump-night-step,
+  // Game.jumpToNightStep()) - tapping any step just moves the pointer there,
+  // forward or back; nothing about a role's own pick ever changes just from
+  // navigating past or away from it (see syncNightSelectionFromState()).
   function nightProgressHtml(state) {
-    const doneIds = state.nightActionHistory.map((h) => h.roleId);
-    const steps = [
-      ...doneIds.map((id) => ({ id, status: 'done' })),
-      ...state.nightQueue.map((id, i) => ({ id, status: i === 0 ? 'current' : 'upcoming' })),
-    ];
-    if (steps.length === 0) return '';
-    const stepsHtml = steps.map((s, i) => {
-      const role = Game.getRole(s.id);
-      const stepHtml = `<span class="night-progress-step ${s.status}" title="${escapeHtml(role ? role.name : '')}">${roleActionEmoji(s.id)}</span>`;
-      const arrowHtml = i < steps.length - 1 ? '<span class="night-progress-arrow"></span>' : '';
+    const order = state.nightRoleOrder;
+    if (order.length === 0) return '';
+    const stepsHtml = order.map((id, i) => {
+      const role = Game.getRole(id);
+      const status = i < state.nightCursor ? 'done' : i === state.nightCursor ? 'current' : 'upcoming';
+      const stepHtml = `<button type="button" class="night-progress-step ${status}" data-action="jump-night-step" data-role-id="${id}" title="${escapeHtml(role ? role.name : '')}">${roleActionEmoji(id)}</button>`;
+      const arrowHtml = i < order.length - 1 ? '<span class="night-progress-arrow"></span>' : '';
       return stepHtml + arrowHtml;
     }).join('');
     return `<div class="night-progress">${stepsHtml}</div>`;
@@ -1083,14 +1186,24 @@
   // marker already sits exactly where it'll end up once actually confirmed. Left
   // out, the preview is just appended - fine there since nothing later in the
   // night could be confirmed yet at that point anyway.
+  //
+  // Every call site passes previewRoleId as the role CURRENTLY being decided on
+  // this exact screen, so once it's given, that role's slot is always driven
+  // ENTIRELY by previewEmoji, even when previewEmoji is '' - never falls back to
+  // that role's already-confirmed state.nightActions entry. Without this, a
+  // candidate who was the role's previously confirmed pick would keep showing
+  // its marker after the narrator taps someone else instead, since re-tapping
+  // only updates the tentative selection, not state.nightActions itself (that
+  // only happens once "Következő" is actually pressed again).
   // tentativeOpts: forwarded straight to nightOutcomeByRole() - see there.
   function nightTileLabel(state, p, previewEmoji = '', previewRoleId = null, tentativeOpts) {
     const byRole = nightOutcomeByRole(state, p.id, tentativeOpts);
-    if (previewEmoji && previewRoleId && previewRoleId in byRole) {
+    const ownField = !!previewRoleId && previewRoleId in byRole;
+    if (ownField) {
       byRole[previewRoleId] = previewEmoji;
     }
     const parts = OUTCOME_ROLE_ORDER.map((r) => byRole[r]).filter(Boolean);
-    if (previewEmoji && !(previewRoleId && previewRoleId in byRole)) parts.push(previewEmoji);
+    if (previewEmoji && !ownField) parts.push(previewEmoji);
     return `<span class="tile-name-line">${playerLabel(p)}</span><span class="tile-emoji-line">${parts.join(' ')}</span>`;
   }
 
@@ -1222,12 +1335,12 @@
     `;
   }
 
-  // Steps forward each time a night action gets confirmed/skipped (nightActionHistory
-  // grows, nightQueue shrinks by the same amount) - not a timer, since the narrator
-  // sets the pace here, not a clock.
+  // Steps forward each time a night action gets confirmed/skipped (nightCursor
+  // advances through the fixed nightRoleOrder - see game.js) - not a timer, since
+  // the narrator sets the pace here, not a clock.
   function nightSkyWidgetHtml(state) {
-    const total = state.nightActionHistory.length + state.nightQueue.length;
-    const fraction = total > 0 ? state.nightActionHistory.length / total : 0;
+    const total = state.nightRoleOrder.length;
+    const fraction = total > 0 ? state.nightCursor / total : 0;
     const arcHtml = `<span class="sky-emoji sky-emoji-manual" style="${skyArcPosition(fraction)}">🌙</span>`;
     return skyWidgetHtml(arcHtml, 'sky-widget-inline');
   }
@@ -1263,6 +1376,28 @@
   // setup (see the 'go-setup' action), not on every re-render within it.
   let roleDraft = { gyilkos: 1 }; // roleId -> number, for plain number inputs (gyilkos)
   let roleToggleDraft = {}; // roleId -> boolean, for every toggle switch
+
+  // Rough headcount-based suggestions: small games (<=6) run with 1 Gyilkos,
+  // mid-size (7-13) with 2, large (14+) with 3; past 14 players a single kill a
+  // night makes the day phase drag, so killsPerNight defaults to 2 there too.
+  // Only APPLIED (see applyAutoDefaults()) while the narrator hasn't manually
+  // touched the field themselves (gyilkosAutoSet/killsPerNightAutoSet) - once
+  // they've typed their own number, further add/remove-player shouldn't quietly
+  // overwrite it.
+  function suggestedGyilkosCount(playerCount) {
+    if (playerCount <= 6) return 1;
+    if (playerCount <= 13) return 2;
+    return 3;
+  }
+  function suggestedKillsPerNight(playerCount) {
+    return playerCount > 14 ? 2 : 1;
+  }
+  let gyilkosAutoSet = true;
+  let killsPerNightAutoSet = true;
+  function applyAutoDefaults(playerCount) {
+    if (gyilkosAutoSet) roleDraft.gyilkos = suggestedGyilkosCount(playerCount);
+    if (killsPerNightAutoSet) Game.setKillsPerNight(suggestedKillsPerNight(playerCount));
+  }
 
   function renderSetup(state) {
     const playersHtml = state.players.map((p) => `
@@ -1347,7 +1482,10 @@
       </div>
 
       <div class="card">
-        <h2>Szerepek beállítása</h2>
+        <div class="card-header-row">
+          <h2>Szerepek beállítása</h2>
+          <span class="role-count-badge" id="role-count-badge">0/0</span>
+        </div>
         <p class="muted">Add meg, hány darab legyen az egyes szerepekből. A maradék játékos automatikusan Polgár lesz.</p>
         ${selectAllHtml}
         ${rolesHtml}
@@ -1368,6 +1506,7 @@
     // whole screen synchronously via save(), which would otherwise steal focus
     // out of the field on every keystroke.
     document.getElementById('kills-per-night').addEventListener('change', (e) => {
+      killsPerNightAutoSet = false;
       Game.setKillsPerNight(e.target.value);
     });
     document.getElementById('day-timer-minutes').addEventListener('change', (e) => {
@@ -1388,6 +1527,7 @@
     const gyilkosInput = document.getElementById('count-gyilkos');
     if (gyilkosInput) {
       gyilkosInput.addEventListener('input', () => {
+        gyilkosAutoSet = false;
         roleDraft.gyilkos = parseInt(gyilkosInput.value, 10) || 0;
         updateRoleAvailability();
       });
@@ -1447,6 +1587,14 @@
 
     const remaining = totalPlayers - used;
 
+    // "hány szerep hány játékosból" jelző a kártya fejlécében - pirosra vált, ha
+    // több szerep van kiválasztva, mint ahány játékos van.
+    const countBadge = document.getElementById('role-count-badge');
+    if (countBadge) {
+      countBadge.textContent = `${used}/${totalPlayers}`;
+      countBadge.classList.toggle('over', used > totalPlayers);
+    }
+
     toggleRoles.forEach((r) => {
       const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
       if (!toggle) return;
@@ -1492,6 +1640,12 @@
 
   function doAddPlayer() {
     const input = document.getElementById('new-player-name');
+    // Only worth recomputing if the add will actually go through - Game.addPlayer()
+    // itself no-ops on a blank name, so applying the "count+1" default here for a
+    // no-op would leave a stale suggestion nothing ever renders to correct.
+    if (input.value.trim()) {
+      applyAutoDefaults(Game.getState().players.length + 1);
+    }
     Game.addPlayer(input.value);
     // Game.addPlayer() re-renders the setup screen synchronously, which replaces
     // this input with a fresh (empty) one - re-query it so focus lands on the new one.
@@ -1509,7 +1663,9 @@
   // role's confirmation so it can be redone.
 
   let assignSelectedIds = [];
-  let swapSelectedId = null; // first tap on the "Szerepek kiosztva" board, until a second tap swaps roles
+  let swapSelectedIds = []; // 0-2 ids: first tap on the "Szerepek kiosztva" board, until a
+                             // second tap swaps roles - both stay highlighted afterward as
+                             // feedback for which two rows just traded, until the next tap
 
   function renderAssign(state) {
     const role = Game.currentAssignmentRole();
@@ -1523,11 +1679,19 @@
       // has that (see canGoBack), and its roles get announced one by one as they're
       // handed out, so quietly swapping them afterward would be misleading.
       const swappable = !state.assignmentWasManual;
+      // While a first pick is active, anyone else with that SAME role isn't
+      // offered as a second pick at all - swapping two players who already have
+      // the same role wouldn't change anything.
+      const firstPick = swapSelectedIds.length === 1
+        ? state.players.find((pl) => pl.id === swapSelectedIds[0])
+        : null;
       const rows = [...state.players].sort((a, b) => roleSortIndex(a.roleId) - roleSortIndex(b.roleId)).map((p) => {
         const pRole = Game.getRole(p.roleId);
-        const isSelected = swappable && p.id === swapSelectedId;
-        const cls = swappable ? `swap-row${isSelected ? ' selected' : ''}` : '';
-        const attrs = swappable ? `data-action="select-swap" data-id="${p.id}"` : '';
+        const isSelected = swappable && swapSelectedIds.includes(p.id);
+        const blocked = !!firstPick && p.id !== firstPick.id && p.roleId === firstPick.roleId;
+        const clickable = swappable && !blocked;
+        const cls = swappable ? `swap-row${isSelected ? ' selected' : ''}${blocked ? ' swap-row-blocked' : ''}` : '';
+        const attrs = clickable ? `data-action="select-swap" data-id="${p.id}"` : '';
         return `<li class="${cls}" ${attrs}><span class="badge ${pRole.team}">${roleEmoji(pRole)}${pRole.name}</span><span>${escapeHtml(p.name)}</span></li>`;
       }).join('');
       app.innerHTML = `
@@ -1582,12 +1746,50 @@
 
   // ---- Night screen ----
 
-  let investigatePendingTargetId = null; // Nyomozó's target, confirmed, waiting for the result to be acknowledged
+  let investigatePendingTargetId = null; // Rendőr's target, confirmed, waiting for the result to be acknowledged
   let linkSelectedIds = []; // Cupido's picks this night - up to 2, toggled on/off
   let killSelectedIds = []; // Gyilkos's picks this night - up to state.killsPerNight, toggled on/off
   let nightSelectedId = null; // single-target night action pick, until confirmed
   let maimPendingTargetId = null; // Csonkoló's target, confirmed, waiting for a body-part pick
   let maimSelectedPart = null; // 'kez' | 'nyelv' picked in the popup, until confirmed
+  let lastNightRoleShown = null; // roleId renderNight() last drew a board for - see syncNightSelectionFromState()
+
+  // state.nightActions is the only source of truth for what's been picked, and
+  // it's order-independent (see game.js's nightCursor/nightActions) - navigating
+  // to a role (forward, back, or jumping straight to it) never changes it, so
+  // this just re-derives the local selection vars from whatever's already there
+  // for that role every time renderNight() notices it's showing a DIFFERENT role
+  // than last time (see the lastNightRoleShown check in renderNight()). A fresh,
+  // never-decided role naturally comes back empty; a revisited one comes back
+  // showing the same pick as before, ready to keep as-is or change - no separate
+  // undo/redo bookkeeping needed anywhere else. The maim/investigate popups are
+  // deliberately left closed even when a maim/investigate role is restored - only
+  // the target itself comes back pre-selected (with its usual preview marker on
+  // the board), so tapping a different player is still one tap away instead of
+  // having to back out of a reopened popup first. The Csonkoló's body-part pick
+  // still comes back too (maimSelectedPart), just not shown until "Következő" is
+  // pressed again - at that point the popup opens straight to the previous choice.
+  function syncNightSelectionFromState(state, role) {
+    nightSelectedId = null;
+    investigatePendingTargetId = null;
+    maimPendingTargetId = null;
+    maimSelectedPart = null;
+    linkSelectedIds = [];
+    killSelectedIds = [];
+    const recordedAction = state.nightActions[role.id];
+    if (!recordedAction) return;
+    if (role.nightAction === 'kill') {
+      killSelectedIds = [...(recordedAction.targetIds || [])];
+    } else if (role.nightAction === 'link') {
+      linkSelectedIds = [...(recordedAction.pairIds || [])];
+    } else if (role.nightAction === 'maim') {
+      nightSelectedId = recordedAction.targetId || null;
+      maimSelectedPart = recordedAction.bodyPart || null;
+    } else {
+      // protect / gift / abduct / investigate - single target
+      nightSelectedId = recordedAction.targetId || null;
+    }
+  }
 
   // Wraps a board (a target grid or a plain roster list) with a popup layered on top
   // of it - same look everywhere a turn needs to pause the narrator on something
@@ -1597,7 +1799,7 @@
   // given, is put on the backdrop itself so tapping outside the box (or on its
   // padding) triggers that action - the Csonkoló's body-part popup uses this so
   // "clicking away" cancels back to target-picking instead of needing its own button;
-  // Nyomozó's result popup leaves this unset - it can only be advanced past via the
+  // Rendőr's result popup leaves this unset - it can only be advanced past via the
   // board's own "Következő" button, not dismissed by tapping away.
   function wrapWithPopup(contentHtml, popupHtml, dismissAction) {
     if (!popupHtml) return contentHtml;
@@ -1612,20 +1814,33 @@
 
   function renderNight(state) {
     const role = Game.currentNightRole();
-    const canGoBackNight = state.nightActionHistory.length > 0;
+    const canGoBackNight = state.nightCursor > 0;
+    // A different role than what was last drawn - either normal forward progress
+    // (confirmed/skipped), or the narrator navigated (night-back/jump-night-step).
+    // Either way, re-derive the local selection vars fresh from state.nightActions
+    // for this role (see syncNightSelectionFromState()) rather than leaving
+    // whatever the PREVIOUS role's board left behind. If it's the same role as
+    // last render (e.g. just toggling a multi-select pick), skip this - it would
+    // wipe out the in-progress, not-yet-confirmed tap.
+    if (role && role.id !== lastNightRoleShown) {
+      syncNightSelectionFromState(state, role);
+      lastNightRoleShown = role.id;
+    } else if (!role) {
+      lastNightRoleShown = null;
+    }
     // Anyone abducted by the UFO can still be picked as a target by other roles too -
     // the action just won't have any effect on them (see game.js resolveNight/investigateResult).
     // The UFO itself can't pick itself either, but stays visible on the board (disabled)
     // instead of vanishing from the list - same for anyone else a role can't target.
     const targetable = Game.alivePlayers();
 
-    // Nyomozó's result and the Csonkoló's body-part pick are both popups that sit on
+    // Rendőr's result and the Csonkoló's body-part pick are both popups that sit on
     // top of their OWN role's target board, not the next one - Game.recordNightAction()/
     // recordMaimAction() only runs once the board's own "Következő" footer button is
     // pressed a second time (see the generic and maim branches below), so the board
     // underneath doesn't advance to the next role until then. Neither popup has a
     // button of its own - the shared footer button confirms both. The Csonkoló's
-    // popup can also be cancelled by tapping away (back to target-picking); Nyomozó's
+    // popup can also be cancelled by tapping away (back to target-picking); Rendőr's
     // result can't - it only advances via the footer button.
     let popupHtml = '';
     let investigatePopupActive = false;
@@ -1706,16 +1921,19 @@
 
     if (role.nightAction === 'link') {
       const capacity = 2;
+      // Once both picks are made, this pair REPLACES na.cupido's confirmed pair
+      // for every tile - not just the two selected ones - via
+      // tentativePartnerIdFor()/tentativeAbductedIds(), so if the narrator is
+      // re-editing an already-confirmed bond: a third player who was only
+      // abducted/bond-shielded/bond-healed via the OLD pairing's chain-drag stops
+      // showing that the moment the new pair no longer includes their old
+      // partner, and the two newly picked players immediately preview whatever a
+      // confirmed bond between THEM would cause - all before "Következő" is even
+      // pressed, not just after.
+      const tentativePairIds = linkSelectedIds.length === 2 ? [...linkSelectedIds] : undefined;
       const board = targetable.map((p) => {
         const isSelected = linkSelectedIds.includes(p.id);
-        // Once both picks are made, each tile gets told about the other via
-        // tentativePartnerId - nightOutcomeByRole() then previews everything a
-        // confirmed bond between them would cause (abduction chain-drag, a
-        // Katona's immunity, the kill itself, all dimmed the same way as an
-        // already-voided one) before "Összekötés" is even pressed.
-        const tentativeOpts = isSelected && linkSelectedIds.length === 2
-          ? { tentativePartnerId: linkSelectedIds.find((id) => id !== p.id) }
-          : undefined;
+        const tentativeOpts = tentativePairIds ? { tentativePairIds } : undefined;
         const preview = isSelected ? roleActionEmoji('cupido') : '';
         return `<button class="assignee-card${isSelected ? ' selected' : ''}" data-action="toggle-link-target" data-id="${p.id}">${nightTileLabel(state, p, preview, 'cupido', tentativeOpts)}</button>`;
       }).join('');
@@ -1733,7 +1951,7 @@
           <footer class="actions">
             <button data-action="night-back" ${canGoBackNight ? '' : 'disabled'}>Vissza</button>
             <button data-action="skip-night">Kihagyás</button>
-            <button class="primary" data-action="confirm-link" ${linkSelectedIds.length === capacity ? '' : 'disabled'}>Összekötés</button>
+            <button class="primary" data-action="confirm-link" ${linkSelectedIds.length === capacity ? '' : 'disabled'}>Következő</button>
           </footer>
         </div>
       `;
@@ -1814,8 +2032,8 @@
       return;
     }
 
-    // Gyilkos has its own branch above (multi-select) - only Orvos/Pék (bond-
-    // transfer) and Nyomozó/UFO (no bond-transfer) reach here.
+    // Gyilkos has its own branch above (multi-select) - only Orvos/Pék/UFO
+    // (bond-transfer) and Rendőr (no bond-transfer) reach here.
     const selectedPartnerId = nightSelectedId ? linkedPartnerId(state, nightSelectedId) : null;
     // Same idea as Cupido's tentativePartnerId, for the two roles whose own pick
     // can void an already-shown Gyilkos/Katona/Orvos marker: the UFO (abduct) and
@@ -1834,10 +2052,10 @@
     const orvosTargetAbducted = role.id === 'orvos' && !!nightSelectedId && state.abductedIds.includes(nightSelectedId);
     const targets = targetable.map((p) => {
       const isSelected = p.id === nightSelectedId;
-      // The UFO can't abduct itself, and there's no point in the Nyomozó investigating
+      // The UFO can't abduct itself, and there's no point in the Rendőr investigating
       // themselves - both still shown on the board, just disabled.
       const selectable = !((role.id === 'ufo' && p.roleId === 'ufo') || (role.id === 'nyomozo' && p.roleId === 'nyomozo'));
-      const bondTransfers = role.id === 'orvos' || role.id === 'pek';
+      const bondTransfers = role.id === 'orvos' || role.id === 'pek' || role.id === 'ufo';
       const roleEmojiHere = orvosTargetAbducted ? voidedMarker(roleActionEmoji(role.id)) : roleActionEmoji(role.id);
       const partnerPreview = bondTransfers && p.id === selectedPartnerId ? roleEmojiHere : '';
       const preview = isSelected ? roleEmojiHere : partnerPreview;
@@ -1846,7 +2064,7 @@
       return `<button class="${cls}" ${attrs}>${nightTileLabel(state, p, preview, role.id, tentativeOpts)}</button>`;
     }).join('');
 
-    // The same "Következő" footer button drives both steps of Nyomozó's investigate,
+    // The same "Következő" footer button drives both steps of Rendőr's investigate,
     // same as the Csonkoló's maim: picks the target first, then (once the result
     // popup is open) acknowledges it and actually advances.
     const nextAction = investigatePopupActive ? 'confirm-investigate' : 'confirm-night-target';
@@ -2117,8 +2335,12 @@
     nightSelectedId = state.phase === Game.PHASES.NIGHT ? nightSelectedId : null;
     maimPendingTargetId = state.phase === Game.PHASES.NIGHT ? maimPendingTargetId : null;
     maimSelectedPart = state.phase === Game.PHASES.NIGHT ? maimSelectedPart : null;
+    // Also reset when leaving NIGHT entirely, so next round's first role (often
+    // the same roleId as this round's) is treated as "different" and re-synced,
+    // instead of appearing to already match lastNightRoleShown from last night.
+    lastNightRoleShown = state.phase === Game.PHASES.NIGHT ? lastNightRoleShown : null;
     assignSelectedIds = state.phase === Game.PHASES.ASSIGN ? assignSelectedIds : [];
-    swapSelectedId = state.phase === Game.PHASES.ASSIGN ? swapSelectedId : null;
+    swapSelectedIds = state.phase === Game.PHASES.ASSIGN ? swapSelectedIds : [];
     daySelectedId = state.phase === Game.PHASES.DAY ? daySelectedId : null;
     if (state.phase !== Game.PHASES.DAY) {
       stopDayTimerLoop();
@@ -2150,7 +2372,17 @@
     }
 
     const btn = e.target.closest('[data-action]');
-    if (!btn) return;
+    if (!btn) {
+      // A stray click (not on any actionable element) while a swap pick is still
+      // showing on "Szerepek kiosztva" - whether mid-pick (1 selected) or just
+      // sitting there as post-swap feedback (2 selected, see select-swap) -
+      // clears it instead of leaving it stuck highlighted indefinitely.
+      if (swapSelectedIds.length > 0) {
+        swapSelectedIds = [];
+        render(Game.getState());
+      }
+      return;
+    }
     const action = btn.dataset.action;
     const state = Game.getState();
 
@@ -2167,10 +2399,19 @@
       else if (action === 'go-setup') {
         roleDraft = { gyilkos: 1 };
         roleToggleDraft = {};
+        gyilkosAutoSet = true;
+        killsPerNightAutoSet = true;
+        // resetGame() carries player names over from the previous game, so this
+        // isn't necessarily 0 - the headcount-based suggestion should reflect
+        // whoever's actually still in the list.
+        applyAutoDefaults(state.players.length);
         Game.enterSetup();
       }
       else if (action === 'add-player') doAddPlayer();
-      else if (action === 'remove-player') Game.removePlayer(btn.dataset.id);
+      else if (action === 'remove-player') {
+        applyAutoDefaults(state.players.length - 1);
+        Game.removePlayer(btn.dataset.id);
+      }
       else if (action === 'toggle-role-single') {
         const nowOn = btn.getAttribute('aria-pressed') !== 'true';
         btn.setAttribute('aria-pressed', nowOn ? 'true' : 'false');
@@ -2178,19 +2419,54 @@
         updateRoleAvailability();
       }
       else if (action === 'toggle-all-roles') {
-        const toggleableRoles = ROLES.filter((r) => r.maxCount === 1 && !r.alwaysActive);
-        const allOn = toggleableRoles.length > 0 && toggleableRoles.every((r) => roleToggleDraft[r.id]);
-        const newState = !allOn;
-        toggleableRoles.forEach((r) => {
-          roleToggleDraft[r.id] = newState;
-          const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
-          if (toggle) toggle.setAttribute('aria-pressed', newState ? 'true' : 'false');
-        });
-        btn.setAttribute('aria-pressed', newState ? 'true' : 'false');
+        // Same top-to-bottom reading order as the setup screen itself
+        // (setupRoleSortIndex/SETUP_ROLE_ORDER), so "fill until full" fills in the
+        // order the narrator actually sees the rows in.
+        const toggleableRoles = [...ROLES]
+          .filter((r) => r.maxCount === 1 && !r.alwaysActive)
+          .sort((a, b) => setupRoleSortIndex(a.id) - setupRoleSortIndex(b.id));
+        // Based on whether ANY are on, not whether ALL are on - if the last fill
+        // ran out of room partway (so not literally every role could be on at
+        // once), "every role is on" can never become true, which would leave the
+        // switch stuck in "fill" mode forever with no way to clear it. Any role
+        // being on already means there's something to clear.
+        const anyOn = toggleableRoles.some((r) => roleToggleDraft[r.id]);
+        const newState = !anyOn;
+
+        if (newState) {
+          // Turning on: fill roles top to bottom only as long as there's room,
+          // instead of blindly turning everything on and overflowing the player
+          // count - once one doesn't fit, it (and everything after it) stays off.
+          const totalPlayers = state.players.length;
+          const gyilkosInput = document.getElementById('count-gyilkos');
+          const gyilkosCount = gyilkosInput ? (parseInt(gyilkosInput.value, 10) || 0) : 0;
+          let used = ROLES.filter((r) => r.alwaysActive).length + gyilkosCount;
+          toggleableRoles.forEach((r) => {
+            const cost = r.linkedCountRoleId ? gyilkosCount : 1;
+            const fits = used + cost <= totalPlayers;
+            roleToggleDraft[r.id] = fits;
+            if (fits) used += cost;
+            const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+            if (toggle) toggle.setAttribute('aria-pressed', fits ? 'true' : 'false');
+          });
+        } else {
+          toggleableRoles.forEach((r) => {
+            roleToggleDraft[r.id] = false;
+            const toggle = document.querySelector(`[data-action="toggle-role-single"][data-role-id="${r.id}"]`);
+            if (toggle) toggle.setAttribute('aria-pressed', 'false');
+          });
+        }
+
+        // Only reads as "on" once everything actually fit and got turned on - if
+        // capacity ran out partway, it stays off. The fill/clear decision above
+        // is based on anyOn (not this), so the switch still isn't stuck: the next
+        // press clears whatever did get turned on rather than trying to fill more.
+        const nowAllOn = toggleableRoles.length > 0 && toggleableRoles.every((r) => roleToggleDraft[r.id]);
+        btn.setAttribute('aria-pressed', nowAllOn ? 'true' : 'false');
         updateRoleAvailability();
       }
-      else if (action === 'assign-roles') { swapSelectedId = null; Game.beginRoleAssignment(collectRoleCounts()); }
-      else if (action === 'auto-assign-roles') { swapSelectedId = null; Game.autoAssignRoles(collectRoleCounts()); }
+      else if (action === 'assign-roles') { swapSelectedIds = []; Game.beginRoleAssignment(collectRoleCounts()); }
+      else if (action === 'auto-assign-roles') { swapSelectedIds = []; Game.autoAssignRoles(collectRoleCounts()); }
       else if (action === 'toggle-assignee') {
         const id = btn.dataset.id;
         const role = Game.currentAssignmentRole();
@@ -2210,12 +2486,12 @@
       }
       else if (action === 'assign-back') {
         assignSelectedIds = [];
-        swapSelectedId = null;
+        swapSelectedIds = [];
         Game.stepBackAssignment();
       }
       else if (action === 'cancel-assignment') {
         assignSelectedIds = [];
-        swapSelectedId = null;
+        swapSelectedIds = [];
         // Re-seed the setup screen's drafts from the counts that were actually in
         // use for this assignment (Game.cancelRoleAssignment() below wipes
         // state.assignmentTotalCounts) - otherwise Mégse would silently reset
@@ -2233,16 +2509,21 @@
       }
       else if (action === 'select-swap') {
         const id = btn.dataset.id;
-        if (swapSelectedId === null || swapSelectedId === id) {
-          swapSelectedId = swapSelectedId === id ? null : id;
+        if (swapSelectedIds.length === 1 && swapSelectedIds[0] === id) {
+          // Tapping the sole pick again cancels it.
+          swapSelectedIds = [];
           render(state);
-        } else {
-          const firstId = swapSelectedId;
-          // Clear the selection before swapping - Game.swapPlayerRoles() re-renders
-          // synchronously via save(), so it must already be null by then or the
-          // just-swapped player would still show as selected afterwards.
-          swapSelectedId = null;
+        } else if (swapSelectedIds.length === 1) {
+          // Second, different pick - swap them, and keep BOTH highlighted
+          // afterward (instead of clearing back to nothing) so it's visible which
+          // two rows just traded roles. Any further tap - even on one of this
+          // same pair - starts a fresh pick, not a toggle within the old pair.
+          const firstId = swapSelectedIds[0];
+          swapSelectedIds = [firstId, id];
           Game.swapPlayerRoles(firstId, id);
+        } else {
+          swapSelectedIds = [id];
+          render(state);
         }
       }
       else if (action === 'start-game') Game.startGame();
@@ -2253,58 +2534,30 @@
         if (role.nightAction === 'investigate') {
           // Don't record/advance yet - just hold the target and show the result
           // popup on top of this same board; Game.recordNightAction() only runs once
-          // its own "Következő" is pressed (see 'confirm-investigate' below). Keep
-          // nightSelectedId set (instead of clearing it here) so the target tile
-          // stays visibly selected, magnifying glass and all, while the result
-          // popup sits on top of it - it was disappearing because this used to
-          // clear it immediately, before the popup even opened.
+          // its own "Következő" is pressed (see 'confirm-investigate' below).
           investigatePendingTargetId = targetId;
           render(state);
         } else {
-          nightSelectedId = null;
           Game.recordNightAction(targetId);
         }
       }
       else if (action === 'confirm-investigate') {
-        const targetId = investigatePendingTargetId;
-        investigatePendingTargetId = null;
-        nightSelectedId = null;
-        Game.recordNightAction(targetId);
+        Game.recordNightAction(investigatePendingTargetId);
       }
       else if (action === 'confirm-maim-target') {
-        // Same fix as investigate above - keep nightSelectedId set so the target
-        // tile (and its 🪚 marker) stays visibly selected under the body-part popup.
+        // Same idea as investigate above - the popup sits on top of this same
+        // board until confirmed, nothing recorded yet.
         maimPendingTargetId = nightSelectedId;
         render(state);
       }
       else if (action === 'cancel-maim-target') { maimPendingTargetId = null; maimSelectedPart = null; render(state); }
       else if (action === 'select-maim-part') { maimSelectedPart = btn.dataset.part; render(state); }
       else if (action === 'confirm-maim-part') {
-        const targetId = maimPendingTargetId;
-        const part = maimSelectedPart;
-        maimPendingTargetId = null;
-        maimSelectedPart = null;
-        nightSelectedId = null;
-        Game.recordMaimAction(targetId, part);
+        Game.recordMaimAction(maimPendingTargetId, maimSelectedPart);
       }
-      else if (action === 'skip-night') {
-        nightSelectedId = null;
-        investigatePendingTargetId = null;
-        maimPendingTargetId = null;
-        maimSelectedPart = null;
-        linkSelectedIds = [];
-        Game.skipNightAction();
-      }
-      else if (action === 'night-back') {
-        // Clear all in-progress night-screen selections before stepping back - it
-        // re-renders synchronously via save(), so stale picks must already be gone.
-        nightSelectedId = null;
-        investigatePendingTargetId = null;
-        maimPendingTargetId = null;
-        maimSelectedPart = null;
-        linkSelectedIds = [];
-        Game.stepBackNightAction();
-      }
+      else if (action === 'skip-night') Game.skipNightAction();
+      else if (action === 'night-back') Game.stepBackNightAction();
+      else if (action === 'jump-night-step') Game.jumpToNightStep(btn.dataset.roleId);
       else if (action === 'toggle-link-target') {
         const id = btn.dataset.id;
         const idx = linkSelectedIds.indexOf(id);
@@ -2316,13 +2569,7 @@
         }
         render(state);
       }
-      else if (action === 'confirm-link') {
-        const ids = linkSelectedIds;
-        // Same ordering fix as confirm-night-target - clear before the synchronous
-        // re-render inside recordLinkAction(), not after.
-        linkSelectedIds = [];
-        Game.recordLinkAction(ids[0], ids[1]);
-      }
+      else if (action === 'confirm-link') Game.recordLinkAction(linkSelectedIds[0], linkSelectedIds[1]);
       else if (action === 'toggle-kill-target') {
         const id = btn.dataset.id;
         const capacity = Game.killCapacity();
@@ -2335,11 +2582,7 @@
         }
         render(state);
       }
-      else if (action === 'confirm-kill') {
-        const ids = killSelectedIds;
-        killSelectedIds = [];
-        Game.recordKillAction(ids);
-      }
+      else if (action === 'confirm-kill') Game.recordKillAction(killSelectedIds);
       else if (action === 'select-day-target') { daySelectedId = btn.dataset.id; render(state); }
       else if (action === 'confirm-eliminate') {
         Game.eliminatePlayer(daySelectedId);
