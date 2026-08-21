@@ -35,9 +35,13 @@
 //                   which always matches the number of gyilkos). Combine with
 //                   maxCount: 1 to also show a toggle that turns the whole group
 //                   on/off (the mirrored count only counts while it's on).
-//   immuneToKill  - true if the gyilkosok's night kill never works on this role
-//                   (see Katona). Doesn't protect from other death causes (day vote,
-//                   Cupido's bond, a Vadász's shot).
+//   hasShield     - true if this role starts with a one-time shield that blocks
+//                   exactly the FIRST night kill attempt against them (see Katona) -
+//                   game.js tracks whether it's been used per-player (player.shieldUsed),
+//                   not on the role itself, since it's consumed permanently the moment
+//                   it blocks something. Doesn't protect from other death causes (day
+//                   vote, Cupido's bond, a Vadász's shot) or from a second kill attempt
+//                   once already used.
 //   soloWinIfVotedOut - true if being voted out during the day immediately ends the
 //                   game with this player as the sole winner (see Gyári munkás).
 //   shootsOnElimination - true if being voted out during the day lets this player
@@ -153,13 +157,13 @@ const ROLES = [
     id: 'katona',
     name: 'Katona',
     team: 'polgarok',
-    description: 'A gyilkosok éjjel nem tudják megölni, a merénylet mindig kudarcot vall. Éjszaka nincs feladata.',
+    description: 'Van egy pajzsa: az első éjszakai gyilkossági kísérletet automatikusan kivédi, utána eltűnik, és onnantól ugyanúgy megölhető, mint bárki más. Éjszaka nincs feladata.',
     nightAction: null,
     nightOrder: null,
     actionPrompt: null,
     emoji: '🛡️',
     maxCount: 1,
-    immuneToKill: true,
+    hasShield: true,
   },
   {
     id: 'vadasz',

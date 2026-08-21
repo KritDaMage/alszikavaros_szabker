@@ -35,11 +35,32 @@ const Game = (() => {
                            // doesn't shrink as roles get decided, so a role's spot in it
                            // never changes no matter how much the narrator jumps around
       nightCursor: 0, // index into nightRoleOrder - which role's screen is showing right
-                       // now. Purely a "where are we looking" pointer: stepping back,
-                       // jumping to any step (jumpToNightStep), confirming, or skipping
-                       // only ever move this - none of them touch nightActions for any
-                       // role other than the one currently at this position, so revisiting
-                       // an earlier step can never lose a later one's pick.
+                       // now, or exactly nightRoleOrder.length once every role's been
+                       // stepped past (currentNightRole() then returns null - index.html
+                       // shows the end-of-night summary there instead of resolving right
+                       // away, see finishNight()). Purely a "where are we looking" pointer:
+                       // stepping back, jumping to any step (jumpToNightStep), confirming,
+                       // or skipping only ever move this - none of them touch nightActions
+                       // for any role other than the one currently at this position, so
+                       // revisiting an earlier step can never lose a later one's pick.
+      nightVisited: [], // roleIds that have actually been confirmed or skipped PAST at
+                         // least once THIS night (see advanceNightCursor()) - only grows,
+                         // never shrinks when the narrator steps back or jumps to an
+                         // earlier/later role, so index.html's progress row can keep
+                         // showing a role as decided (and whether it acted or was skipped)
+                         // no matter where nightCursor currently sits. Also what
+                         // advanceNightCursor() checks to decide whether "Következő" should
+                         // loop back to a role the narrator jumped straight past without
+                         // ever landing on, instead of quietly finishing with it untouched.
+      nightForcedSkipped: [], // roleIds whose MOST RECENT skip (see skipNightAction()) happened
+                               // with no living, non-abducted holder to even ask - as opposed to
+                               // a real "Kihagyás" the narrator chose with an actual actor
+                               // available. index.html's progress row uses this to avoid showing
+                               // a forced pass-through as a deliberate skip: if the UFO's target
+                               // later moves off this role's holder, it stops looking "decided"
+                               // instead of staying stuck amber for a choice nobody was ever
+                               // offered. Removed again the moment a real skip/pick happens
+                               // while an actor IS available (see skipNightAction()/record*()).
       nightActions: {}, // roleId -> { targetId } (or the shape each role's recordXAction
                          // uses) - a flat, order-independent record of every role's pick
                          // this night, present only for roles that have actually been
@@ -50,18 +71,27 @@ const Game = (() => {
                         // player (chain reaction). Can't be targeted, and their own night
                         // action (if any) is voided, for this night only.
       pendingDeaths: [], // result of the current night's resolution, until announced
-      dayVoteResolved: false, // true once the day's one allowed elimination decision has
-                               // been made (eliminatePlayer or noElimination) - blocks
-                               // voting again until beginNight() resets it for next round
-      dayEliminatedId: null, // playerId eliminatePlayer() just killed this vote, or null if
-                              // noElimination() was picked instead - lets reopenDayVote()'s
-                              // "Vissza" revive them and reopen voting
+      dayEliminatedIds: [], // playerIds eliminatePlayer() has voted out THIS day so far -
+                             // no cap, so this can grow past one (see eliminatePlayer()).
+                             // index.html shows each as its own coffin banner;
+                             // reopenDayVote()'s "Vissza" only ever undoes the LAST one.
+      roundHistory: [], // [{ round, nightActions, abductedIds, aliveIds: [playerId],
+                        //    dayDeaths: [{playerId, cause: 'vote'|'hunter'}] }] - one entry per
+                        // round, pushed by resolveNight() (see its own comment there) and
+                        // appended to across that round's day phase - the ended screen's
+                        // paginated per-round history reads this.
       pendingHunterShot: null, // playerId of a just-eliminated Vadász, waiting for their shot target
       pendingMaim: [], // [{ targetId, bodyPart: 'kez' | 'nyelv' }] - Csonkoló's victim(s) for
                         // the upcoming day only (2 if Cupido's bond dragged in a partner).
                         // Overwritten fresh every resolveNight().
-      pekDeathRound: null, // round the Pék died in, or null - starts the starvation countdown
-      pekConsecutiveAbductions: 0, // nights in a row the UFO has taken the Pék
+      pekHungerStreak: 0, // consecutive rounds in a row NOBODY actually got bread - abducted,
+                          // dead, or just skipped, it doesn't matter why (see resolveNight()) -
+                          // resets to 0 the moment bread IS given, even on the same round the
+                          // Pék then dies from something else that same night. Only ever moves
+                          // if a Pék actually exists in this game.
+      katonaShieldLostRound: null, // round a Katona's shield got consumed blocking a kill,
+                                    // or null - lets the Day screen announce it just once,
+                                    // the same morning it happened (see resolveNight()).
       winner: null, // null | 'polgarok' | 'gyilkosok' | 'solo'
       winReason: null, // null | 'gyilkosok_elfogytak' | 'gyilkosok_tobbsegben' | 'starvation' | 'solo' -
                         // why the game ended, for the ended screen's explanation line (see
@@ -138,6 +168,9 @@ const Game = (() => {
       name,
       roleId: null,
       alive: true,
+      shieldUsed: false, // only meaningful if this player ends up holding a hasShield
+                         // role (Katona) - true once their shield has blocked a kill
+                         // (see resolveNight()), permanently, for the rest of the game.
     };
   }
 
@@ -184,7 +217,7 @@ const Game = (() => {
       throw new Error('Több szerep lett megadva, mint ahány játékos van.');
     }
 
-    state.players.forEach((p) => { p.roleId = null; p.alive = true; });
+    state.players.forEach((p) => { p.roleId = null; p.alive = true; p.shieldUsed = false; });
     state.assignmentQueue = distinctRoles;
     state.assignmentTotalCounts = { ...roleCounts };
     state.assignmentHistory = [];
@@ -225,7 +258,21 @@ const Game = (() => {
     if (state.assignmentQueue.length === 0) {
       // Stay in ASSIGN (renderAssign shows a "Játék indítása" screen once the queue
       // is empty) instead of dropping back to the full SETUP screen.
-      state.players.forEach((p) => { if (!p.roleId) p.roleId = fillerRoleId; });
+      const filledIds = [];
+      state.players.forEach((p) => {
+        if (!p.roleId) {
+          p.roleId = fillerRoleId;
+          filledIds.push(p.id);
+        }
+      });
+      // Recorded as its own history step too (isFillerFill), even though the
+      // narrator never explicitly confirmed it - otherwise stepBackAssignment()
+      // from the "Szerepek kiosztva" summary would only undo the last REAL role
+      // and leave these players stuck holding fillerRoleId, unselectable for
+      // whatever gets reassigned.
+      if (filledIds.length > 0) {
+        state.assignmentHistory.push({ roleId: fillerRoleId, playerIds: filledIds, isFillerFill: true });
+      }
     }
     save();
   }
@@ -258,6 +305,7 @@ const Game = (() => {
     state.players.forEach((p, idx) => {
       p.roleId = pool[idx];
       p.alive = true;
+      p.shieldUsed = false;
     });
 
     // Land on the same "Szerepek kiosztva" screen the manual flow ends on (empty
@@ -271,10 +319,23 @@ const Game = (() => {
   }
 
   // Undoes the most recently confirmed role and puts it back at the front of the
-  // queue, so the narrator can redo it with different people.
+  // queue, so the narrator can redo it with different people. If the queue had
+  // just emptied out (assignRoleToPlayers() auto-filled the leftover players as
+  // fillerRoleId), that fill is its own history entry (isFillerFill) even
+  // though the narrator never confirmed it - undone here too, in the SAME
+  // "Vissza" tap, so those players go back to unassigned instead of staying
+  // stuck holding fillerRoleId and unselectable for whatever gets reassigned.
   function stepBackAssignment() {
     if (state.phase !== PHASES.ASSIGN || state.assignmentHistory.length === 0) return;
-    const last = state.assignmentHistory.pop();
+    let last = state.assignmentHistory.pop();
+    if (last.isFillerFill) {
+      last.playerIds.forEach((id) => {
+        const p = state.players.find((pl) => pl.id === id);
+        if (p) p.roleId = null;
+      });
+      if (state.assignmentHistory.length === 0) { save(); return; }
+      last = state.assignmentHistory.pop();
+    }
     last.playerIds.forEach((id) => {
       const p = state.players.find((pl) => pl.id === id);
       if (p) p.roleId = null;
@@ -327,12 +388,23 @@ const Game = (() => {
   // ---- Night phase ----
 
   function beginNight() {
+    // The village doesn't starve mid-day, only when it goes to sleep again -
+    // state.pekHungerStreak already reached 3+ during the PREVIOUS resolveNight()
+    // (see its own comment there), but that day still got to play out fully as
+    // one last chance to win some other way (e.g. voting out the right person).
+    // Only actually ends the game here, instead of ever starting this night.
+    if (state.pekHungerStreak >= 3) {
+      state.winner = 'gyilkosok';
+      state.winReason = 'starvation';
+      state.phase = PHASES.ENDED;
+      save();
+      return;
+    }
     state.phase = PHASES.NIGHT;
     state.nightActions = {};
     state.abductedIds = [];
     state.pendingDeaths = [];
-    state.dayVoteResolved = false;
-    state.dayEliminatedId = null;
+    state.dayEliminatedIds = [];
     // Every role assigned to someone THIS GAME keeps its nightly turn for the rest of
     // the game, even after its holder(s) die - a real narrator still calls "Gyilkosok,
     // ébredjetek" every night regardless, so skipping the call wouldn't leak who died
@@ -344,6 +416,8 @@ const Game = (() => {
       .sort((a, b) => a.nightOrder - b.nightOrder)
       .map((r) => r.id);
     state.nightCursor = 0;
+    state.nightVisited = [];
+    state.nightForcedSkipped = [];
     // In practice this never starts empty (Orvos/Rendőr are always in rolesInGame),
     // but resolve immediately if it ever did rather than getting stuck with nothing
     // to render.
@@ -376,18 +450,71 @@ const Game = (() => {
     return ids;
   }
 
+  // Whether roleId currently has a living, reachable holder to actually ask -
+  // false once every living holder is abducted (or all of them are dead). Same
+  // rule index.html's own roleHasActor() uses to decide whether to show the
+  // "mock" no-actor screen. The UFO is exempt from its own abducted-ness - a
+  // Cupido bond can chain-drag the UFO's own holder into state.abductedIds, but
+  // that can't be what makes the UFO itself unreachable (see skipNightAction()).
+  function roleHasActor(roleId) {
+    return state.players.some((p) => p.roleId === roleId && p.alive && (roleId === 'ufo' || !state.abductedIds.includes(p.id)));
+  }
+
+  // A role just got a REAL pick recorded (as opposed to a forced pass-through -
+  // see skipNightAction()), so any earlier "forced" flag no longer applies.
+  function clearForcedSkip(roleId) {
+    const idx = state.nightForcedSkipped.indexOf(roleId);
+    if (idx !== -1) state.nightForcedSkipped.splice(idx, 1);
+  }
+
   // Moves to the next role in tonight's fixed order (state.nightRoleOrder) -
-  // resolves the night once it runs past the last one, instead of waiting for a
-  // separate "Éjszaka lezárása" confirmation screen. Never touches nightActions
-  // itself - that's entirely up to whichever record*Action()/skipNightAction()
-  // call is advancing past its own role.
+  // once it runs past the last one, currentNightRole() starts returning null,
+  // which index.html reads as "show the end-of-night summary" instead of
+  // immediately resolving. The narrator can still jump back to fix any role's
+  // pick from there (jumpToNightStep()) - only finishNight() actually resolves.
+  // Never touches nightActions itself - that's entirely up to whichever
+  // record*Action()/skipNightAction() call is advancing past its own role.
+  //
+  // Marks the role just left as visited, then moves forward by one AS USUAL -
+  // except right at the boundary (would otherwise run past the last role),
+  // where it first checks for any role that still needs a real look (see
+  // isSettled below) instead of finishing with it silently never shown. Only
+  // once every role is settled does this actually reach nightRoleOrder.length
+  // (the end-of-night summary).
+  //
+  // Also checked BEFORE the normal step - if this confirm/skip was the very
+  // last unsettled role, everything is now settled, so this goes straight back
+  // to the summary instead of stepping forward one role at a time through
+  // everything else that's already decided.
   function advanceNightCursor() {
-    state.nightCursor += 1;
-    if (state.nightCursor >= state.nightRoleOrder.length) {
-      resolveNight();
-    } else {
-      save();
+    const leavingRole = currentNightRole();
+    if (leavingRole && !state.nightVisited.includes(leavingRole.id)) {
+      state.nightVisited.push(leavingRole.id);
     }
+    const order = state.nightRoleOrder;
+    // A visited role only counts as genuinely SETTLED if it wasn't a forced
+    // pass-through (nightForcedSkipped - see skipNightAction()), or - even if
+    // it was - it's still just as unreachable right now as it was then. If the
+    // UFO's target has since moved off this role's holder, the reason it got
+    // force-skipped is gone, so it needs a real look before the night can wrap
+    // up, exactly like a role that was never visited at all - otherwise the
+    // narrator could reach the summary (or the night could resolve) without
+    // this role ever having had an actual chance to act, just because the UFO
+    // happened to be pointed at it the moment its turn came up.
+    const isSettled = (id) => state.nightVisited.includes(id)
+      && (!state.nightForcedSkipped.includes(id) || !roleHasActor(id));
+    if (order.every(isSettled)) {
+      state.nightCursor = order.length;
+      save();
+      return;
+    }
+    let next = state.nightCursor + 1;
+    if (next >= order.length) {
+      const firstUnsettled = order.findIndex((id) => !isSettled(id));
+      next = firstUnsettled === -1 ? order.length : firstUnsettled;
+    }
+    state.nightCursor = next;
+    save();
   }
 
   // Just moves the "which screen is showing" pointer back one - nightActions is
@@ -411,11 +538,21 @@ const Game = (() => {
     save();
   }
 
+  // Confirms the end-of-night summary (index.html's renderNightSummary()) -
+  // only reachable once state.nightCursor has run past every role
+  // (currentNightRole() === null), so there's nothing left the narrator hasn't
+  // at least been shown a chance to fix. Actually resolves the night.
+  function finishNight() {
+    if (state.phase !== PHASES.NIGHT || state.nightCursor < state.nightRoleOrder.length) return;
+    resolveNight();
+  }
+
   function recordNightAction(targetId) {
     const role = currentNightRole();
     if (!role) return;
     state.nightActions[role.id] = { targetId };
     state.abductedIds = computeAbductedIds();
+    clearForcedSkip(role.id);
     advanceNightCursor();
   }
 
@@ -430,6 +567,7 @@ const Game = (() => {
     if (uniqueIds.length !== capacity) return;
     state.nightActions[role.id] = { targetIds: uniqueIds };
     state.abductedIds = computeAbductedIds();
+    clearForcedSkip(role.id);
     advanceNightCursor();
   }
 
@@ -442,6 +580,7 @@ const Game = (() => {
     if (!idA || !idB || idA === idB) return;
     state.nightActions[role.id] = { pairIds: [idA, idB] };
     state.abductedIds = computeAbductedIds();
+    clearForcedSkip(role.id);
     advanceNightCursor();
   }
 
@@ -454,6 +593,7 @@ const Game = (() => {
     if (!targetId || (bodyPart !== 'kez' && bodyPart !== 'nyelv')) return;
     state.nightActions[role.id] = { targetId, bodyPart };
     state.abductedIds = computeAbductedIds();
+    clearForcedSkip(role.id);
     advanceNightCursor();
   }
 
@@ -464,6 +604,17 @@ const Game = (() => {
     const role = currentNightRole();
     if (!role) return;
     delete state.nightActions[role.id];
+    // Was there actually a living, reachable holder to ask? If so, this is a
+    // real "Kihagyás" the narrator chose - if not, the mock/no-actor screen was
+    // the only option, so it doesn't count as a genuine decision (see
+    // nightForcedSkipped's own comment in freshState()).
+    const hadActor = roleHasActor(role.id);
+    const forcedIdx = state.nightForcedSkipped.indexOf(role.id);
+    if (hadActor) {
+      if (forcedIdx !== -1) state.nightForcedSkipped.splice(forcedIdx, 1);
+    } else if (forcedIdx === -1) {
+      state.nightForcedSkipped.push(role.id);
+    }
     state.abductedIds = computeAbductedIds();
     advanceNightCursor();
   }
@@ -475,29 +626,22 @@ const Game = (() => {
     return playerId === a ? b : playerId === b ? a : null;
   }
 
-  // The role of whoever is bonded to playerId via tonight's Cupido link, or null.
-  function bondPartnerRole(playerId, linkAction) {
-    const partnerId = bondPartnerId(playerId, linkAction);
-    if (!partnerId) return null;
-    const partner = state.players.find((p) => p.id === partnerId);
-    return partner ? getRole(partner.roleId) : null;
-  }
-
-  // Side effects triggered by a specific player's death, wherever it happens (night
-  // kill, day vote, a Vadász's shot).
-  function applyDeathConsequences(player) {
-    if (!player) return;
-    const role = getRole(player.roleId);
-    if (role && role.id === 'pek' && state.pekDeathRound === null) {
-      state.pekDeathRound = state.round;
-    }
-  }
-
   // Resolve the collected night actions: who died.
   function resolveNight() {
     const killAction = state.nightActions['gyilkos'];
-    const protectAction = state.nightActions['orvos'];
-    const linkAction = state.nightActions['cupido'];
+    // A single-holder role (Orvos/Cupido/Csonkoló) whose own holder got abducted
+    // tonight doesn't act at all - "és az ő éjszakai szerepe sem érvényesül"
+    // (roles.js's UFO description) - same idea as the allGyilkosokAbducted check
+    // below, just for a role with exactly one holder instead of several. The
+    // recorded pick itself (state.nightActions) is left untouched - only its
+    // EFFECT here is skipped, same as a Katona's shield voids a kill without
+    // deleting who was targeted.
+    const actorAbducted = (roleId) => {
+      const holder = state.players.find((p) => p.roleId === roleId);
+      return !!holder && state.abductedIds.includes(holder.id);
+    };
+    const protectAction = actorAbducted('orvos') ? null : state.nightActions['orvos'];
+    const linkAction = actorAbducted('cupido') ? null : state.nightActions['cupido'];
     const deaths = [];
 
     // Gyilkos now wakes before the UFO (see ROLE_ORDER/nightOrder in roles.js), so
@@ -519,18 +663,32 @@ const Game = (() => {
     killTargetIds.forEach((targetId) => {
       const targetPlayer = state.players.find((p) => p.id === targetId);
       const targetRole = targetPlayer ? getRole(targetPlayer.roleId) : null;
-      // A Katona's immunity extends to whoever Cupido bonded them with tonight.
-      const partnerRole = bondPartnerRole(targetId, linkAction);
-      const roleImmune = (targetRole && targetRole.immuneToKill) || (partnerRole && partnerRole.immuneToKill);
+      const partnerId = bondPartnerId(targetId, linkAction);
+      const partnerPlayer = partnerId ? state.players.find((p) => p.id === partnerId) : null;
+      const partnerRole = partnerPlayer ? getRole(partnerPlayer.roleId) : null;
       const wasAbducted = state.abductedIds.includes(targetId);
       // The Orvos's protection bond-transfers too - protecting one half of tonight's
       // Cupido pair shields the other half from the kill as well.
       const survivesProtection = protectedId !== null
-        && (targetId === protectedId || bondPartnerId(targetId, linkAction) === protectedId);
+        && (targetId === protectedId || partnerId === protectedId);
 
-      if (!survivesProtection && !roleImmune && !wasAbducted) {
-        deaths.push(targetId);
+      if (survivesProtection || wasAbducted) return;
+
+      // A Katona's shield (if it hasn't already blocked something) extends to
+      // whoever Cupido bonded them with tonight too, same as the Orvos's
+      // protection does - blocks this ONE kill attempt and is then permanently
+      // spent, whichever of the pair actually holds it, never blocking again
+      // for the rest of the game (see roles.js's hasShield).
+      const shieldHolder = (targetRole && targetRole.hasShield && !targetPlayer.shieldUsed) ? targetPlayer
+        : (partnerRole && partnerRole.hasShield && partnerPlayer && !partnerPlayer.shieldUsed) ? partnerPlayer
+        : null;
+      if (shieldHolder) {
+        shieldHolder.shieldUsed = true;
+        state.katonaShieldLostRound = state.round;
+        return;
       }
+
+      deaths.push(targetId);
     });
 
     // Cupido's bond: whatever happened to one of tonight's linked pair happens
@@ -546,7 +704,6 @@ const Game = (() => {
       const p = state.players.find((pl) => pl.id === id);
       if (p) {
         p.alive = false;
-        applyDeathConsequences(p);
       }
     });
 
@@ -554,7 +711,7 @@ const Game = (() => {
     // abducted or the Orvos protected them (same as death), but Cupido's bond still
     // drags the partner into the same restriction, same as it does with death.
     // Always overwritten fresh - no maim tonight clears yesterday's.
-    const maimAction = state.nightActions['csonkolo'];
+    const maimAction = actorAbducted('csonkolo') ? null : state.nightActions['csonkolo'];
     const newPendingMaim = [];
 
     if (maimAction && maimAction.targetId) {
@@ -578,26 +735,47 @@ const Game = (() => {
 
     state.pendingMaim = newPendingMaim;
 
-    // Pék: track consecutive UFO abductions while he's still alive.
+    // One entry per round, night+day together (the day-phase deaths - a vote or
+    // a Vadász's shot - get appended to THIS SAME entry later, see
+    // eliminatePlayer()/resolveHunterShot()) - the ended screen's paginated
+    // history reads this. Rather than separately re-deriving "who died/was
+    // maimed" here, it snapshots the RAW inputs (nightActions, abductedIds, and
+    // who's alive going into the day) - index.html rebuilds a fake state from
+    // this and reuses its own resolveTentativeNight()/nightSummaryRowsHtml(),
+    // the exact same logic that already renders tonight's summary live, so a
+    // past round looks exactly like it did on the day it happened, with no
+    // separate "what happened" logic to keep in sync. nightActions' own values
+    // are never mutated in place after being set (only ever replaced wholesale
+    // by the next record*Action() call, or wiped by the next beginNight()), so
+    // a shallow copy of the dict is a safe, permanent snapshot.
+    state.roundHistory.push({
+      round: state.round,
+      nightActions: { ...state.nightActions },
+      abductedIds: [...state.abductedIds],
+      aliveIds: state.players.filter((p) => p.alive).map((p) => p.id),
+      dayDeaths: [], // { playerId, cause: 'vote' | 'hunter' }
+    });
+
+    // Pék: one unified streak for "consecutive rounds nobody actually got
+    // bread" - abducted, dead (no living holder to even ask), or just skipped
+    // while active, none of it matters why, it all resets to 0 the moment
+    // bread IS given and climbs by 1 otherwise. This is what lets a Pék who
+    // gives bread and THEN dies from something else that same night correctly
+    // reset the streak for this round (bread really was given) instead of
+    // starting the countdown early - only the FOLLOWING round, with no Pék
+    // left to ask, actually begins climbing. Never moves at all if no Pék
+    // exists in this game.
     const pekPlayer = state.players.find((p) => p.roleId === 'pek');
-    if (pekPlayer && pekPlayer.alive) {
-      if (state.abductedIds.includes(pekPlayer.id)) {
-        state.pekConsecutiveAbductions += 1;
-      } else {
-        state.pekConsecutiveAbductions = 0;
-      }
+    if (pekPlayer) {
+      const pekAbductedThisRound = state.abductedIds.includes(pekPlayer.id);
+      const breadGivenThisRound = !pekAbductedThisRound && !!(state.nightActions['pek'] && state.nightActions['pek'].targetId);
+      state.pekHungerStreak = breadGivenThisRound ? 0 : state.pekHungerStreak + 1;
     }
-
-    const starvation = (state.pekDeathRound !== null && state.round - state.pekDeathRound >= 3)
-      || state.pekConsecutiveAbductions >= 3;
-
-    if (starvation) {
-      state.winner = 'gyilkosok';
-      state.winReason = 'starvation';
-      state.phase = PHASES.ENDED;
-      save();
-      return;
-    }
+    // Reaching 3 doesn't end the game THIS instant - the village still gets to
+    // live through the day that follows (their last chance to win some other
+    // way, e.g. voting out the right person) - see beginNight()'s own check,
+    // which is what actually ends it in starvation, the moment they'd go to
+    // sleep again with the streak still at 3 or more.
 
     const winner = checkWinCondition();
     if (winner) {
@@ -630,14 +808,19 @@ const Game = (() => {
 
   // ---- Day phase ----
 
+  // No cap on how many can be voted out in one day any more - each successful
+  // call just appends to state.dayEliminatedIds (index.html shows one coffin
+  // banner per entry) and leaves the day phase open for another, instead of
+  // locking after the first. Only a soloWinIfVotedOut/shootsOnElimination role,
+  // or the game actually ending, interrupts that.
   function eliminatePlayer(id) {
     const p = state.players.find((pl) => pl.id === id);
     if (!p || !p.alive) return;
     p.alive = false;
-    state.dayVoteResolved = true;
-    state.dayEliminatedId = id;
+    state.dayEliminatedIds.push(id);
+    const currentRoundHistory = state.roundHistory[state.roundHistory.length - 1];
+    if (currentRoundHistory) currentRoundHistory.dayDeaths.push({ playerId: id, cause: 'vote' });
     const role = getRole(p.roleId);
-    applyDeathConsequences(p);
 
     if (role && role.soloWinIfVotedOut) {
       state.winner = 'solo';
@@ -669,7 +852,14 @@ const Game = (() => {
     const target = state.players.find((p) => p.id === targetId);
     if (!target || !target.alive) return;
     target.alive = false;
-    applyDeathConsequences(target);
+    // Reuses the same day-elimination coffin reveal as a normal vote (see
+    // eliminatePlayer()) - this death happens in the open, same as a vote, so
+    // it gets the same white/black reveal, sequenced right after the Vadász's
+    // own (index.html shows one popup at a time, most recent dayEliminatedIds
+    // entry first).
+    state.dayEliminatedIds.push(targetId);
+    const currentRoundHistory = state.roundHistory[state.roundHistory.length - 1];
+    if (currentRoundHistory) currentRoundHistory.dayDeaths.push({ playerId: targetId, cause: 'hunter' });
     state.pendingHunterShot = null;
 
     const winner = checkWinCondition();
@@ -681,31 +871,35 @@ const Game = (() => {
     save();
   }
 
-  function noElimination() {
-    state.dayVoteResolved = true;
-    save();
-  }
-
-  // Undoes eliminatePlayer()/noElimination() and reopens today's vote - the
-  // "Vissza" button on the locked-vote screen. Only reachable while still on the
-  // day screen (phase === DAY), so this never has to unwind a solo win or a
-  // Vadász's shot: both of those move the phase away from DAY (to ENDED, or to
-  // the pendingHunterShot screen) before the narrator could ever see this button.
+  // Undoes the MOST RECENT eliminatePlayer()/resolveHunterShot() death and
+  // reopens today's voting - the "Vissza" button, only enabled once at least
+  // one death has happened today (see state.dayEliminatedIds). Only reachable
+  // while still on the day screen (phase === DAY), so this never has to unwind
+  // a solo win (that ends the game outright). A Vadász's own vote CAN still be
+  // undone here even while their shot is pending - index.html shows their own
+  // coffin popup (with the normal board, and this button, still underneath)
+  // before the shot-target screen takes over - so pendingHunterShot is cleared
+  // too if it's still pointing at whoever's being brought back.
   function reopenDayVote() {
-    if (state.phase !== PHASES.DAY || !state.dayVoteResolved) return;
-    if (state.dayEliminatedId) {
-      const p = state.players.find((pl) => pl.id === state.dayEliminatedId);
-      if (p) {
-        p.alive = true;
-        const role = getRole(p.roleId);
-        // Only undo the starvation countdown if THIS vote is what started it.
-        if (role && role.id === 'pek' && state.pekDeathRound === state.round) {
-          state.pekDeathRound = null;
-        }
-      }
-      state.dayEliminatedId = null;
+    if (state.phase !== PHASES.DAY || state.dayEliminatedIds.length === 0) return;
+    const id = state.dayEliminatedIds.pop();
+    if (state.pendingHunterShot === id) state.pendingHunterShot = null;
+    // Undo the matching entry this same death added to the round's history too
+    // (see eliminatePlayer()/resolveHunterShot()) - always the LAST one, since
+    // dayDeaths is only ever appended to in the same order as dayEliminatedIds.
+    const currentRoundHistory = state.roundHistory[state.roundHistory.length - 1];
+    if (currentRoundHistory && currentRoundHistory.dayDeaths.length > 0
+      && currentRoundHistory.dayDeaths[currentRoundHistory.dayDeaths.length - 1].playerId === id) {
+      currentRoundHistory.dayDeaths.pop();
     }
-    state.dayVoteResolved = false;
+    const p = state.players.find((pl) => pl.id === id);
+    if (p) {
+      p.alive = true;
+      // Nothing to undo for state.pekHungerStreak here - unlike the old
+      // pekDeathRound, a day-vote death has no immediate effect on it at all;
+      // it only reacts at the next resolveNight(), which will correctly see
+      // the Pék alive again and able to give bread.
+    }
     save();
   }
 
@@ -797,11 +991,11 @@ const Game = (() => {
     skipNightAction,
     stepBackNightAction,
     jumpToNightStep,
+    finishNight,
     resolveNight,
     investigateResult,
     eliminatePlayer,
     resolveHunterShot,
-    noElimination,
     reopenDayVote,
     nextRound,
     resetGame,
