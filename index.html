@@ -396,9 +396,12 @@
 
   .target-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-    gap: 0.5rem;
-    margin-top: 0.75rem;
+    /* Narrower minimum than before - lets more columns fit per row on the same
+       screen width (the main lever for "many players don't fit"), without
+       touching any font size. */
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 0.35rem;
+    margin-top: 0.5rem;
   }
 
   /* Tonight's role order, top of every night screen - see nightProgressHtml(). */
@@ -484,7 +487,7 @@
   }
 
   .target-grid button {
-    padding: 0.9rem 0.5rem;
+    padding: 0.55rem 0.4rem;
     /* <button> clips overflowing content by default in some browsers even
        without an explicit overflow:hidden anywhere - without this, a tall emoji
        glyph in .tile-emoji-line (overflow:visible there, see that rule) still
@@ -492,7 +495,7 @@
     overflow: visible;
     /* A grid item's default min-width is "auto", which lets its intrinsic content
        size (here, a long NOWRAP player name in .tile-name-line) override the
-       column's minmax(120px, 1fr) track sizing - different renders (whichever
+       column's minmax(...) track sizing - different renders (whichever
        tile currently has the longest name) then get different actual column
        widths, making the whole board visibly shift left/right between screens.
        This makes the track win instead, so .tile-name-line's own ellipsis
@@ -526,8 +529,8 @@
     */
     height: 2.9rem;
     line-height: 1.35rem;
-    margin-top: 0.4rem;
-    padding-top: 0.25rem;
+    margin-top: 0.25rem;
+    padding-top: 0.15rem;
     border-top: 1px solid var(--border);
     text-align: left;
     white-space: normal;
